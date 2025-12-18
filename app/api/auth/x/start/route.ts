@@ -17,8 +17,9 @@ export async function GET() {
   const state = randomVerifier(24);
 
   // Store verifier+state in HttpOnly cookies (MVP). In production, bind to user session + DB.
-  setHttpOnlyCookie("x_pkce_verifier", verifier, 10 * 60);
-  setHttpOnlyCookie("x_oauth_state", state, 10 * 60);
+  await setHttpOnlyCookie("x_pkce_verifier", verifier, 10 * 60);
+  await setHttpOnlyCookie("x_oauth_state", state, 10 * 60);
+
 
   const scopes = process.env.X_SCOPES ?? "tweet.read tweet.write users.read offline.access";
   const authorizeUrl = new URL("https://x.com/i/oauth2/authorize");
