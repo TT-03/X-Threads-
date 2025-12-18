@@ -11,8 +11,8 @@ export async function GET(req: Request) {
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
 
-  const expectedState = getCookie("x_oauth_state");
-  const verifier = getCookie("x_pkce_verifier");
+  const expectedState = await getCookie("x_oauth_state");
+  const verifier = await getCookie("x_pkce_verifier");
 
   if (!code || !state) {
     return NextResponse.json({ error: "Missing code/state" }, { status: 400 });
@@ -69,11 +69,11 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "No access_token in response", details: tokenJson }, { status: 400 });
   }
 
-  setHttpOnlyCookie("x_access_token", accessToken, 60 * 60); // 1h (depends on actual expires_in)
+  await setHttpOnlyCookie("x_access_token", accessToken, 60 * 60);
 
-  // cleanup
-  clearCookie("x_oauth_state");
-  clearCookie("x_pkce_verifier");
+  await clearCookie("x_oauth_state");
+  await clearCookie("x_pkce_verifier");
+
 
   return NextResponse.redirect(new URL("/app/compose", url.origin));
 }
