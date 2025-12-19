@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getCookie } from "../../_lib/cookies";
 
-const CONNECT_URL = "/accounts"; // ← ここだけ変えればOKにする
+const CONNECT_URL = "/accounts";
 
 const Body = z.object({
   text: z.string().min(1).max(10000),
@@ -24,6 +24,29 @@ async function readResponse(res: Response) {
   } catch {
     return { json: { raw: text }, rawText: text };
   }
+}
+
+// Xのrate limit reset(UNIX秒)から retryAfter秒を作る（なければnull）
+function getRetryAfterSeconds(res: Response): number | null {
+  // 1) Retry-After があれば最優先
+  const ra = res.headers.get("retry-after");
+  if (ra) {
+    const n = Number(ra);
+    if (Number.isFinite(n) && n > 0) return Math.min(60 * 60, Math.ceil(n));
+  }
+
+  // 2) x-rate-limit-reset (UNIX秒) があればそこから計算
+  const reset = res.headers.get("x-rate-limit-reset");
+  if (reset) {
+    const resetSec = Number(reset);
+    if (Number.isFinite(resetSec) && resetSec > 0) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const diff = resetSec - nowSec;
+      if (diff > 0) return Math.min(60 * 60, Math.ceil(diff));
+    }
+  }
+
+  return null;
 }
 
 export async function POST(req: Request) {
@@ -62,27 +85,15 @@ export async function POST(req: Request) {
 
   if (!res.ok) {
     const detailStr = pickDetail(json);
-    
-    // ✅ レート制限（429）
+
+    // ✅ 429 Too Many Requests
     if (res.status === 429) {
-      const retryAfterHeader = res.headers.get("retry-after"); // 秒が多い
-      const resetHeader = res.headers.get("x-rate-limit-reset"); // epoch秒のことが多い
-
-      const retryAfter = retryAfterHeader ? Number(retryAfterHeader) : undefined;
-      const resetAt = resetHeader ? Number(resetHeader) : undefined;
-
-      // ざっくりユーザー向けメッセージを作る（任意）
-      const waitMsg =
-        typeof retryAfter === "number" && !Number.isNaN(retryAfter)
-          ? `${retryAfter}秒ほど待ってから再度お試しください。`
-          : "少し待ってから再度お試しください。";
-
+      const retryAfter = getRetryAfterSeconds(res) ?? 60;
       return NextResponse.json(
         {
           error: "RATE_LIMITED",
-          message: `投稿が多すぎます（制限中）。${waitMsg}`,
-          retryAfter, // フロントでカウントダウン表示したい時用
-          resetAt,    // これも表示したい時用
+          message: "投稿が多すぎます。しばらく待ってから再度お試しください。",
+          retryAfter, // ✅ フロントが秒でカウントダウンできる
           details: json,
           raw: rawText,
         },
@@ -90,19 +101,16 @@ export async function POST(req: Request) {
       );
     }
 
-    // 認証切れ / 無効トークン（cookieはあるがXが401）
+    // 認証切れ / 無効トークン
     if (res.status === 401) {
       return NextResponse.json(
         {
           error: "UNAUTHORIZED",
           message: "Xの認証が切れました。再連携してください。",
           connectUrl: CONNECT_URL,
-
-          // ★フロントで「未連携表示」に戻すためのヒント（任意だけど便利）
           shouldDisconnect: true,
-
           details: json,
-          raw: rawText, // JSONじゃない時のデバッグ用
+          raw: rawText,
         },
         { status: 401 }
       );
@@ -115,12 +123,12 @@ export async function POST(req: Request) {
           error: "DUPLICATE_TWEET",
           message: "同じ内容の投稿はできません。少し内容を変えて投稿してください。",
           details: json,
+          raw: rawText,
         },
         { status: 409 }
       );
     }
 
-    // その他
     return NextResponse.json(
       {
         error: "X_API_ERROR",
@@ -132,6 +140,5 @@ export async function POST(req: Request) {
     );
   }
 
-  // 成功
   return NextResponse.json(json);
 }
