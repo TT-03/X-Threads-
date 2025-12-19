@@ -79,9 +79,9 @@ export default function ComposePage() {
         kind: "error",
         title: "通信エラー",
         detail: "ネットワーク状況を確認して、もう一度お試しください。",
-      } finally {
+      });
+    } finally {
         setIsPosting(false);
-    }
   }
 
   function schedule() {
