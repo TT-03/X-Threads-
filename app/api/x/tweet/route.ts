@@ -2,15 +2,28 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getCookie } from "../../_lib/cookies";
 
+const CONNECT_URL = "/accounts"; // ← ここだけ変えればOKにする
+
 const Body = z.object({
   text: z.string().min(1).max(10000),
 });
 
-function pickDetail(json: any) {
-  if (typeof json?.detail === "string") return json.detail;
-  if (typeof json?.errors?.[0]?.message === "string") return json.errors[0].message;
-  if (typeof json?.title === "string") return json.title;
+function pickDetail(payload: any) {
+  if (typeof payload?.detail === "string") return payload.detail;
+  if (typeof payload?.errors?.[0]?.message === "string") return payload.errors[0].message;
+  if (typeof payload?.title === "string") return payload.title;
+  if (typeof payload?.message === "string") return payload.message;
   return "";
+}
+
+// JSONが返らないケースにも備える
+async function readResponse(res: Response) {
+  const text = await res.text().catch(() => "");
+  try {
+    return { json: text ? JSON.parse(text) : {}, rawText: text };
+  } catch {
+    return { json: { raw: text }, rawText: text };
+  }
 }
 
 export async function POST(req: Request) {
@@ -22,7 +35,7 @@ export async function POST(req: Request) {
       {
         error: "NOT_CONNECTED",
         message: "Xが未連携です。連携してください。",
-        connectUrl: "/accounts",
+        connectUrl: CONNECT_URL,
       },
       { status: 401 }
     );
@@ -45,7 +58,7 @@ export async function POST(req: Request) {
     body: JSON.stringify({ text: body.data.text }),
   });
 
-  const json = await res.json().catch(() => ({} as any));
+  const { json, rawText } = await readResponse(res);
 
   if (!res.ok) {
     const detailStr = pickDetail(json);
@@ -56,8 +69,13 @@ export async function POST(req: Request) {
         {
           error: "UNAUTHORIZED",
           message: "Xの認証が切れました。再連携してください。",
-          connectUrl: "/accounts",
+          connectUrl: CONNECT_URL,
+
+          // ★フロントで「未連携表示」に戻すためのヒント（任意だけど便利）
+          shouldDisconnect: true,
+
           details: json,
+          raw: rawText, // JSONじゃない時のデバッグ用
         },
         { status: 401 }
       );
@@ -81,10 +99,12 @@ export async function POST(req: Request) {
         error: "X_API_ERROR",
         message: detailStr || "X API error",
         details: json,
+        raw: rawText,
       },
       { status: res.status }
     );
   }
 
+  // 成功
   return NextResponse.json(json);
 }
