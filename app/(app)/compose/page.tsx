@@ -50,19 +50,25 @@ export default function ComposePage() {
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-  const msg =
-    data?.error ??
-    data?.detail ??
-    "投稿に失敗しました（X連携が必要、または権限が不足している可能性があります）";
+  const connectUrl = typeof data?.connectUrl === "string" ? data.connectUrl : undefined;
 
-  const connectUrl = data?.connectUrl as string | undefined;
+  // APIが返す message（例：重複投稿）を最優先にする
+  const msg =
+    (typeof data?.message === "string" && data.message) ||
+    (typeof data?.error === "string" && data.error) ||
+    (typeof data?.details?.detail === "string" && data.details.detail) ||
+    (typeof data?.detail === "string" && data.detail) ||
+    "投稿に失敗しました。";
+
+  // 重複投稿（API側が409を返す or errorコードで判定）
+  const isDuplicate = res.status === 409 || data?.error === "DUPLICATE_TWEET";
 
   showToast({
     kind: "error",
-    title: "投稿に失敗しました",
+    title: isDuplicate ? "同じ内容の投稿はできません" : "投稿に失敗しました",
     detail: String(msg),
     actionLabel: connectUrl ? "連携する" : undefined,
-    onAction: connectUrl ? () => router.push(connectUrl) : undefined, // ★同一タブ遷移
+    onAction: connectUrl ? () => router.push(connectUrl) : undefined, // 同一タブで /accounts
   });
   return;
 }
