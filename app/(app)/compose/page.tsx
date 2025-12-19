@@ -48,18 +48,23 @@ export default function ComposePage() {
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        const msg =
-          data?.error ??
-          data?.detail ??
-          "投稿に失敗しました（X連携が必要、または権限が不足している可能性があります）";
+  const msg =
+    data?.error ??
+    data?.detail ??
+    "投稿に失敗しました（X連携が必要、または権限が不足している可能性があります）";
 
-        showToast({
-          kind: "error",
-          title: "投稿に失敗しました",
-          detail: String(msg),
-        });
-        return;
-      }
+  const connectUrl = data?.connectUrl as string | undefined;
+
+  showToast({
+    kind: "error",
+    title: "投稿に失敗しました",
+    detail: String(msg),
+    actionHref: connectUrl,                 // ★ここが追加
+    actionLabel: connectUrl ? "連携する" : undefined, // ★ここが追加
+  });
+  return;
+}
+
 
       // 成功時：Tweet ID から投稿URLを作って「投稿を開く」ボタンを出す
       const tweetId = data?.data?.id as string | undefined;
