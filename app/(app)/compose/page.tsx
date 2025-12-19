@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
 function countXChars(s: string) {
   // MVP: 単純な文字数。Xのカウントルール(URL等)は後で対応。
@@ -12,11 +13,12 @@ type ToastState = {
   kind: ToastKind;
   title: string;
   detail?: string;
-  actionHref?: string;
   actionLabel?: string;
+  onAction?: () => void;
 };
 
 export default function ComposePage() {
+  const router = useRouter();
   const [text, setText] = useState("");
   const [platform, setPlatform] = useState<"x" | "threads">("x");
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -59,8 +61,8 @@ export default function ComposePage() {
     kind: "error",
     title: "投稿に失敗しました",
     detail: String(msg),
-    actionHref: connectUrl,                 // ★ここが追加
-    actionLabel: connectUrl ? "連携する" : undefined, // ★ここが追加
+    actionLabel: connectUrl ? "連携する" : undefined,
+    onAction: connectUrl ? () => router.push(connectUrl) : undefined, // ★同一タブ遷移
   });
   return;
 }
@@ -171,18 +173,20 @@ export default function ComposePage() {
                   {toast.title}
                 </div>
                 {toast.detail && <div className="mt-1 break-words text-sm text-neutral-700">{toast.detail}</div>}
-                {toast.actionHref && toast.actionLabel && (
-                  <div className="mt-3">
-                    <a
-                      href={toast.actionHref}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center justify-center rounded-xl bg-neutral-900 px-3 py-2 text-sm font-semibold text-white"
-                    >
-                      {toast.actionLabel}
-                    </a>
-                  </div>
-                )}
+                {toast.onAction && toast.actionLabel && (
+  <div className="mt-3">
+    <button
+      onClick={() => {
+        toast.onAction?.();
+        setToast(null); // 押したらトースト閉じたい場合
+      }}
+      className="inline-flex items-center justify-center rounded-xl bg-neutral-900 px-3 py-2 text-sm font-semibold text-white"
+    >
+      {toast.actionLabel}
+    </button>
+  </div>
+)}
+
               </div>
 
               <button
