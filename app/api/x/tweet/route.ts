@@ -6,11 +6,24 @@ const Body = z.object({
   text: z.string().min(1).max(10000),
 });
 
+function pickDetail(json: any) {
+  if (typeof json?.detail === "string") return json.detail;
+  if (typeof json?.errors?.[0]?.message === "string") return json.errors[0].message;
+  if (typeof json?.title === "string") return json.title;
+  return "";
+}
+
 export async function POST(req: Request) {
   const token = await getCookie("x_access_token");
+
+  // 未連携（cookieなし）
   if (!token) {
     return NextResponse.json(
-      { error: "Not connected to X.", connectUrl: "/accounts" },
+      {
+        error: "NOT_CONNECTED",
+        message: "Xが未連携です。連携してください。",
+        connectUrl: "/accounts",
+      },
       { status: 401 }
     );
   }
@@ -18,7 +31,7 @@ export async function POST(req: Request) {
   const body = Body.safeParse(await req.json().catch(() => null));
   if (!body.success) {
     return NextResponse.json(
-      { error: "Invalid body", details: body.error.flatten() },
+      { error: "INVALID_BODY", message: "本文が不正です。", details: body.error.flatten() },
       { status: 400 }
     );
   }
@@ -35,13 +48,22 @@ export async function POST(req: Request) {
   const json = await res.json().catch(() => ({} as any));
 
   if (!res.ok) {
-    const detailStr =
-      typeof (json as any)?.detail === "string"
-        ? (json as any).detail
-        : typeof (json as any)?.errors?.[0]?.message === "string"
-          ? (json as any).errors[0].message
-          : "";
+    const detailStr = pickDetail(json);
 
+    // 認証切れ / 無効トークン（cookieはあるがXが401）
+    if (res.status === 401) {
+      return NextResponse.json(
+        {
+          error: "UNAUTHORIZED",
+          message: "Xの認証が切れました。再連携してください。",
+          connectUrl: "/accounts",
+          details: json,
+        },
+        { status: 401 }
+      );
+    }
+
+    // duplicate content（Xは403で返すことが多い）
     if (res.status === 403 && /duplicate content/i.test(detailStr)) {
       return NextResponse.json(
         {
@@ -53,8 +75,13 @@ export async function POST(req: Request) {
       );
     }
 
+    // その他
     return NextResponse.json(
-      { error: "X API error", details: json },
+      {
+        error: "X_API_ERROR",
+        message: detailStr || "X API error",
+        details: json,
+      },
       { status: res.status }
     );
   }
