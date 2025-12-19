@@ -1,35 +1,91 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 function countXChars(s: string) {
   // MVP: 単純な文字数。Xのカウントルール(URL等)は後で対応。
   return [...s].length;
 }
 
+type ToastKind = "success" | "error" | "info";
+type ToastState = {
+  kind: ToastKind;
+  title: string;
+  detail?: string;
+  actionHref?: string;
+  actionLabel?: string;
+};
+
 export default function ComposePage() {
   const [text, setText] = useState("");
   const [platform, setPlatform] = useState<"x" | "threads">("x");
+  const [toast, setToast] = useState<ToastState | null>(null);
+
   const xCount = useMemo(() => countXChars(text), [text]);
 
-  async function postNow() {
-    const res = await fetch("/api/x/tweet", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
+  // トーストは数秒で自動で消す（邪魔になりすぎないように）
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 6000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      alert(data?.error ?? "投稿に失敗しました（連携が必要かも）");
-      return;
+  function showToast(next: ToastState) {
+    setToast(next);
+  }
+
+  async function postNow() {
+    try {
+      const res = await fetch("/api/x/tweet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        const msg =
+          data?.error ??
+          data?.detail ??
+          "投稿に失敗しました（X連携が必要、または権限が不足している可能性があります）";
+
+        showToast({
+          kind: "error",
+          title: "投稿に失敗しました",
+          detail: String(msg),
+        });
+        return;
+      }
+
+      // 成功時：Tweet ID から投稿URLを作って「投稿を開く」ボタンを出す
+      const tweetId = data?.data?.id as string | undefined;
+      const href = tweetId ? `https://x.com/i/web/status/${tweetId}` : undefined;
+
+      showToast({
+        kind: "success",
+        title: "投稿しました",
+        detail: tweetId ? `Tweet ID: ${tweetId}` : undefined,
+        actionHref: href,
+        actionLabel: href ? "投稿を開く" : undefined,
+      });
+
+      setText("");
+    } catch (e) {
+      showToast({
+        kind: "error",
+        title: "通信エラー",
+        detail: "ネットワーク状況を確認して、もう一度お試しください。",
+      });
     }
-    alert("投稿しました！（MVP）\n" + JSON.stringify(data, null, 2));
-    setText("");
   }
 
   function schedule() {
-    alert("予約機能はUIのみ同梱（DB/ジョブキューは次段階）");
+    showToast({
+      kind: "info",
+      title: "予約機能は準備中です",
+      detail: "現状はUIのみ（DB/ジョブキューは次段階で対応）",
+    });
   }
 
   return (
@@ -78,7 +134,7 @@ export default function ComposePage() {
             今すぐ投稿（X）
           </button>
           <button
-            className="rounded-2xl bg-neutral-100 px-3 py-3 text-sm font-semibold text-neutral-800 active:bg-neutral-200"
+            className="rounded-2xl bg-neutral-100 px-3 py-3 text-sm font-semibold text-neutral-800 active:bg-neutral-200 disabled:opacity-40"
             onClick={schedule}
             disabled={!text.trim()}
           >
@@ -95,6 +151,43 @@ export default function ComposePage() {
           </ul>
         </div>
       </div>
+
+      {/* トースト（画面下に固定表示） */}
+      {toast && (
+        <div className="fixed inset-x-0 bottom-0 z-50 p-4 pb-[calc(env(safe-area-inset-bottom)+16px)]">
+          <div className="mx-auto max-w-md rounded-2xl border bg-white p-4 shadow-lg">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold">
+                  {toast.kind === "success" ? "✅ " : toast.kind === "error" ? "⚠️ " : "ℹ️ "}
+                  {toast.title}
+                </div>
+                {toast.detail && <div className="mt-1 break-words text-sm text-neutral-700">{toast.detail}</div>}
+                {toast.actionHref && toast.actionLabel && (
+                  <div className="mt-3">
+                    <a
+                      href={toast.actionHref}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center justify-center rounded-xl bg-neutral-900 px-3 py-2 text-sm font-semibold text-white"
+                    >
+                      {toast.actionLabel}
+                    </a>
+                  </div>
+                )}
+              </div>
+
+              <button
+                onClick={() => setToast(null)}
+                className="rounded-xl bg-neutral-100 px-3 py-2 text-sm font-semibold text-neutral-800"
+                aria-label="close"
+              >
+                閉じる
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
