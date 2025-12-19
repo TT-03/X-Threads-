@@ -1,4 +1,5 @@
 import Link from "next/link";
+import AccountsClient from "./AccountsClient";
 
 export default function AccountsPage() {
   return (
@@ -9,14 +10,10 @@ export default function AccountsPage() {
           まずはX連携（OAuth 2.0 + PKCE）を実装済み。Threadsは次段階で追加します。
         </p>
 
-        <div className="mt-4 space-y-2">
-          <a
-            className="block w-full rounded-2xl bg-neutral-900 px-4 py-3 text-center text-sm font-semibold text-white"
-            href="/api/auth/x/start"
-          >
-            Xと連携する（OAuth）
-          </a>
+        {/* ✅ ここで「状態表示」「連携/解除」UIを表示 */}
+        <AccountsClient />
 
+        <div className="mt-4 space-y-2">
           <button
             className="block w-full rounded-2xl bg-neutral-100 px-4 py-3 text-center text-sm font-semibold text-neutral-700"
             disabled
