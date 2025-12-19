@@ -23,6 +23,11 @@ export default function ComposePage() {
   const [platform, setPlatform] = useState<"x" | "threads">("x");
   const [toast, setToast] = useState<ToastState | null>(null);
   const [isPosting, setIsPosting] = useState(false);
+
+  // ✅ 追加：レート制限（429）カウントダウン
+  const [rateLimitUntil, setRateLimitUntil] = useState<number | null>(null);
+  const [rateLimitRemaining, setRateLimitRemaining] = useState(0);
+
   const xCount = useMemo(() => countXChars(text), [text]);
 
   // トーストは数秒で自動で消す（邪魔になりすぎないように）
@@ -32,12 +37,40 @@ export default function ComposePage() {
     return () => clearTimeout(t);
   }, [toast]);
 
+  const isRateLimited = rateLimitUntil != null && Date.now() < rateLimitUntil;
+
+  // ✅ 追加：429のカウントダウン更新
+  useEffect(() => {
+    if (!rateLimitUntil) return;
+
+    const tick = () => {
+      const remain = Math.max(0, Math.ceil((rateLimitUntil - Date.now()) / 1000));
+      setRateLimitRemaining(remain);
+      if (remain <= 0) setRateLimitUntil(null);
+    };
+
+    tick();
+    const id = setInterval(tick, 500);
+    return () => clearInterval(id);
+  }, [rateLimitUntil]);
+
   function showToast(next: ToastState) {
     setToast(next);
   }
 
   async function postNow() {
     if (isPosting) return;
+
+    // ✅ 追加：制限中は押せない
+    if (isRateLimited) {
+      showToast({
+        kind: "error",
+        title: "制限中です",
+        detail: `あと${rateLimitRemaining}秒ほど待ってから再度お試しください。`,
+      });
+      return;
+    }
+
     setIsPosting(true);
 
     try {
@@ -47,45 +80,61 @@ export default function ComposePage() {
         body: JSON.stringify({ text }),
       });
 
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json().catch(() => ({} as any));
 
       if (!res.ok) {
-  const connectUrl = typeof data?.connectUrl === "string" ? data.connectUrl : undefined;
+        const connectUrl = typeof data?.connectUrl === "string" ? data.connectUrl : undefined;
 
-  // APIが返す message（例：重複投稿）を最優先にする
-  const msg =
-    (typeof data?.message === "string" && data.message) ||
-    (typeof data?.error === "string" && data.error) ||
-    (typeof data?.details?.detail === "string" && data.details.detail) ||
-    (typeof data?.detail === "string" && data.detail) ||
-    "投稿に失敗しました。";
+        // ✅ 429
+        const is429 = res.status === 429 || data?.error === "RATE_LIMITED";
+        if (is429) {
+          const retryAfter =
+            typeof data?.retryAfter === "number" && Number.isFinite(data.retryAfter)
+              ? data.retryAfter
+              : 60;
 
-  // 重複投稿（API側が409を返す or errorコードで判定）
-  const isDuplicate = res.status === 409 || data?.error === "DUPLICATE_TWEET";
+          setRateLimitUntil(Date.now() + retryAfter * 1000);
 
-  showToast({
-    kind: "error",
-    title: isDuplicate ? "同じ内容の投稿はできません" : "投稿に失敗しました",
-    detail: String(msg),
-    actionLabel: connectUrl ? "連携する" : undefined,
-    onAction: connectUrl ? () => router.push(connectUrl) : undefined, // 同一タブで /accounts
-  });
-  return;
-}
+          showToast({
+            kind: "error",
+            title: "投稿が多すぎます（制限中）",
+            detail: `あと${retryAfter}秒ほど待ってから再度お試しください。`,
+          });
+          return;
+        }
 
+        // APIが返す message を優先
+        const msg =
+          (typeof data?.message === "string" && data.message) ||
+          (typeof data?.error === "string" && data.error) ||
+          (typeof data?.details?.detail === "string" && data.details.detail) ||
+          (typeof data?.detail === "string" && data.detail) ||
+          "投稿に失敗しました。";
 
-      // 成功時：Tweet ID から投稿URLを作って「投稿を開く」ボタンを出す
+        // 重複投稿
+        const isDuplicate = res.status === 409 || data?.error === "DUPLICATE_TWEET";
+
+        showToast({
+          kind: "error",
+          title: isDuplicate ? "同じ内容の投稿はできません" : "投稿に失敗しました",
+          detail: String(msg),
+          actionLabel: connectUrl ? "連携する" : undefined,
+          onAction: connectUrl ? () => router.push(connectUrl) : undefined, // 同一タブで /accounts
+        });
+        return;
+      }
+
+      // 成功時：Tweet ID から投稿URLを作って「投稿を開く」
       const tweetId = data?.data?.id as string | undefined;
       const href = tweetId ? `https://x.com/i/web/status/${tweetId}` : undefined;
 
       showToast({
-  kind: "success",
-  title: "投稿しました",
-  detail: tweetId ? `Tweet ID: ${tweetId}` : undefined,
-  actionLabel: href ? "投稿を開く" : undefined,
-  onAction: href ? () => router.push(href) : undefined,
-});
-
+        kind: "success",
+        title: "投稿しました",
+        detail: tweetId ? `Tweet ID: ${tweetId}` : undefined,
+        actionLabel: href ? "投稿を開く" : undefined,
+        onAction: href ? () => window.open(href, "_blank", "noreferrer") : undefined, // ✅ Xは別タブが安全
+      });
 
       setText("");
     } catch (e) {
@@ -95,9 +144,10 @@ export default function ComposePage() {
         detail: "ネットワーク状況を確認して、もう一度お試しください。",
       });
     } finally {
-        setIsPosting(false);
+      setIsPosting(false);
     }
   }
+
   function schedule() {
     showToast({
       kind: "info",
@@ -142,13 +192,20 @@ export default function ComposePage() {
           onChange={(e) => setText(e.target.value)}
         />
 
+        {/* ✅ 任意：制限中の表示 */}
+        {isRateLimited && (
+          <div className="mt-2 text-xs text-amber-700">
+            制限中：あと {rateLimitRemaining} 秒で再投稿できます
+          </div>
+        )}
+
         <div className="mt-3 grid grid-cols-2 gap-2">
           <button
             className="rounded-2xl bg-neutral-900 px-3 py-3 text-sm font-semibold text-white disabled:opacity-40"
             onClick={postNow}
-            disabled={!text.trim() || platform !== "x" || isPosting}
+            disabled={!text.trim() || platform !== "x" || isPosting || isRateLimited}
           >
-            {isPosting ? "投稿中…" : "今すぐ投稿（X）"}
+            {isPosting ? "投稿中…" : isRateLimited ? `制限中（${rateLimitRemaining}s）` : "今すぐ投稿（X）"}
           </button>
           <button
             className="rounded-2xl bg-neutral-100 px-3 py-3 text-sm font-semibold text-neutral-800 active:bg-neutral-200 disabled:opacity-40"
@@ -180,20 +237,20 @@ export default function ComposePage() {
                   {toast.title}
                 </div>
                 {toast.detail && <div className="mt-1 break-words text-sm text-neutral-700">{toast.detail}</div>}
-                {toast.onAction && toast.actionLabel && (
-  <div className="mt-3">
-    <button
-      onClick={() => {
-        toast.onAction?.();
-        setToast(null); // 押したらトースト閉じたい場合
-      }}
-      className="inline-flex items-center justify-center rounded-xl bg-neutral-900 px-3 py-2 text-sm font-semibold text-white"
-    >
-      {toast.actionLabel}
-    </button>
-  </div>
-)}
 
+                {toast.onAction && toast.actionLabel && (
+                  <div className="mt-3">
+                    <button
+                      onClick={() => {
+                        toast.onAction?.();
+                        setToast(null);
+                      }}
+                      className="inline-flex items-center justify-center rounded-xl bg-neutral-900 px-3 py-2 text-sm font-semibold text-white"
+                    >
+                      {toast.actionLabel}
+                    </button>
+                  </div>
+                )}
               </div>
 
               <button
