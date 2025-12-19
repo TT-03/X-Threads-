@@ -73,12 +73,13 @@ export default function ComposePage() {
       const href = tweetId ? `https://x.com/i/web/status/${tweetId}` : undefined;
 
       showToast({
-        kind: "success",
-        title: "投稿しました",
-        detail: tweetId ? `Tweet ID: ${tweetId}` : undefined,
-        actionHref: href,
-        actionLabel: href ? "投稿を開く" : undefined,
-      });
+  kind: "success",
+  title: "投稿しました",
+  detail: tweetId ? `Tweet ID: ${tweetId}` : undefined,
+  actionLabel: href ? "投稿を開く" : undefined,
+  onAction: href ? () => router.push(href) : undefined,
+});
+
 
       setText("");
     } catch (e) {
