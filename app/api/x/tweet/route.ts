@@ -10,7 +10,7 @@ export async function POST(req: Request) {
   const token = await getCookie("x_access_token");
   if (!token) {
     return NextResponse.json(
-  { error: "Not connected to X. Go to /accounts to connect." },
+  { error: "Not connected to X.", connectUrl: "/accounts" },
   { status: 401 }
 );
 
