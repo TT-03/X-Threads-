@@ -62,6 +62,33 @@ export async function POST(req: Request) {
 
   if (!res.ok) {
     const detailStr = pickDetail(json);
+    
+    // ✅ レート制限（429）
+    if (res.status === 429) {
+      const retryAfterHeader = res.headers.get("retry-after"); // 秒が多い
+      const resetHeader = res.headers.get("x-rate-limit-reset"); // epoch秒のことが多い
+
+      const retryAfter = retryAfterHeader ? Number(retryAfterHeader) : undefined;
+      const resetAt = resetHeader ? Number(resetHeader) : undefined;
+
+      // ざっくりユーザー向けメッセージを作る（任意）
+      const waitMsg =
+        typeof retryAfter === "number" && !Number.isNaN(retryAfter)
+          ? `${retryAfter}秒ほど待ってから再度お試しください。`
+          : "少し待ってから再度お試しください。";
+
+      return NextResponse.json(
+        {
+          error: "RATE_LIMITED",
+          message: `投稿が多すぎます（制限中）。${waitMsg}`,
+          retryAfter, // フロントでカウントダウン表示したい時用
+          resetAt,    // これも表示したい時用
+          details: json,
+          raw: rawText,
+        },
+        { status: 429 }
+      );
+    }
 
     // 認証切れ / 無効トークン（cookieはあるがXが401）
     if (res.status === 401) {
