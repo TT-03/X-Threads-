@@ -82,8 +82,8 @@ export default function ComposePage() {
       });
     } finally {
         setIsPosting(false);
+    }
   }
-
   function schedule() {
     showToast({
       kind: "info",
@@ -132,7 +132,7 @@ export default function ComposePage() {
           <button
             className="rounded-2xl bg-neutral-900 px-3 py-3 text-sm font-semibold text-white disabled:opacity-40"
             onClick={postNow}
-            disabled={isPosting || !text.trim() || platform !== "x"}
+            disabled={!text.trim() || platform !== "x" || isPosting}
           >
             {isPosting ? "投稿中…" : "今すぐ投稿（X）"}
           </button>
