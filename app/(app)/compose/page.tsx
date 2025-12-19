@@ -20,7 +20,7 @@ export default function ComposePage() {
   const [text, setText] = useState("");
   const [platform, setPlatform] = useState<"x" | "threads">("x");
   const [toast, setToast] = useState<ToastState | null>(null);
-
+  const [isPosting, setIsPosting] = useState(false);
   const xCount = useMemo(() => countXChars(text), [text]);
 
   // トーストは数秒で自動で消す（邪魔になりすぎないように）
@@ -35,6 +35,9 @@ export default function ComposePage() {
   }
 
   async function postNow() {
+    if (isPosting) return;
+    setIsPosting(true);
+
     try {
       const res = await fetch("/api/x/tweet", {
         method: "POST",
@@ -76,7 +79,8 @@ export default function ComposePage() {
         kind: "error",
         title: "通信エラー",
         detail: "ネットワーク状況を確認して、もう一度お試しください。",
-      });
+      }finally {
+        setIsPosting(false);
     }
   }
 
@@ -128,15 +132,14 @@ export default function ComposePage() {
           <button
             className="rounded-2xl bg-neutral-900 px-3 py-3 text-sm font-semibold text-white disabled:opacity-40"
             onClick={postNow}
-            disabled={!text.trim() || platform !== "x"}
-            title={platform !== "x" ? "Threadsは次段階で対応します" : ""}
+            disabled={isPosting || !text.trim() || platform !== "x"}
           >
-            今すぐ投稿（X）
+            {isPosting ? "投稿中…" : "今すぐ投稿（X）"}
           </button>
           <button
             className="rounded-2xl bg-neutral-100 px-3 py-3 text-sm font-semibold text-neutral-800 active:bg-neutral-200 disabled:opacity-40"
             onClick={schedule}
-            disabled={!text.trim()}
+            disabled={isPosting || !text.trim()}
           >
             予約に入れる
           </button>
