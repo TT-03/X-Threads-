@@ -9,7 +9,11 @@ const Body = z.object({
 export async function POST(req: Request) {
   const token = await getCookie("x_access_token");
   if (!token) {
-    return NextResponse.json({ error: "Not connected to X. Go to /app/accounts to connect." }, { status: 401 });
+    return NextResponse.json(
+  { error: "Not connected to X. Go to /accounts to connect." },
+  { status: 401 }
+);
+
   }
 
   const body = Body.safeParse(await req.json().catch(() => null));
