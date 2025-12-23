@@ -14,6 +14,13 @@ type ScheduledPost = {
   attempts: number | null;
 };
 
+type JobResult = {
+  id: string;
+  action: "sent" | "failed" | "skipped";
+  tweetId?: string | null;
+  error?: string;
+};
+
 function requireCronAuth(req: Request) {
   const secret = process.env.CRON_SECRET;
 
@@ -62,6 +69,7 @@ export async function POST(req: Request) {
 }
 
 async function runOnce() {
+  // サーバー環境変数チェック
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return NextResponse.json(
       { error: "Missing env: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY" },
@@ -72,6 +80,7 @@ async function runOnce() {
   const supabase = getSupabaseAdmin();
   const nowIso = new Date().toISOString();
 
+  // ✅ 期限到来の pending を最大10件拾う
   const { data: rows, error: selErr } = await supabase
     .from("scheduled_posts")
     .select("id,user_id,provider,text,run_at,status,attempts")
@@ -82,21 +91,33 @@ async function runOnce() {
     .limit(10);
 
   if (selErr) {
-    return NextResponse.json({ error: "Failed to select scheduled_posts", details: selErr }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to select scheduled_posts", details: selErr },
+      { status: 500 }
+    );
   }
 
   const jobs = (rows ?? []) as ScheduledPost[];
   if (jobs.length === 0) {
-    return NextResponse.json({ ok: true, processed: 0, sent: 0, failed: 0, message: "実行対象なし" });
+    return NextResponse.json({
+      ok: true,
+      processed: 0,
+      sent: 0,
+      failed: 0,
+      results: [],
+      message: "実行対象なし",
+    });
   }
 
   let processed = 0;
   let sent = 0;
   let failed = 0;
+  const results: JobResult[] = [];
 
   for (const job of jobs) {
     processed++;
 
+    // ① ロック：pending→running（二重実行防止）
     const { data: lockRows, error: lockErr } = await supabase
       .from("scheduled_posts")
       .update({ status: "running", updated_at: new Date().toISOString() })
@@ -104,8 +125,12 @@ async function runOnce() {
       .eq("status", "pending")
       .select("id");
 
-    if (lockErr || !lockRows || lockRows.length === 0) continue;
+    if (lockErr || !lockRows || lockRows.length === 0) {
+      results.push({ id: job.id, action: "skipped", error: "lock failed or already running" });
+      continue;
+    }
 
+    // ② トークン取得
     const { data: tok, error: tokErr } = await supabase
       .from("x_tokens")
       .select("access_token")
@@ -113,39 +138,46 @@ async function runOnce() {
       .single();
 
     if (tokErr || !tok?.access_token) {
+      const errMsg = "Missing access_token in x_tokens";
       await supabase
         .from("scheduled_posts")
         .update({
           status: "failed",
           attempts: (job.attempts ?? 0) + 1,
-          last_error: "Missing access_token in x_tokens",
+          last_error: errMsg,
           updated_at: new Date().toISOString(),
         })
         .eq("id", job.id);
 
       failed++;
+      results.push({ id: job.id, action: "failed", error: errMsg });
       continue;
     }
 
+    // ③ 投稿
     const r = await postToX(tok.access_token, job.text);
 
     if (!r.ok) {
+      const errMsg = `X post failed (${r.status}): ${JSON.stringify(r.json)}`;
+
       await supabase
         .from("scheduled_posts")
         .update({
           status: "failed",
           attempts: (job.attempts ?? 0) + 1,
-          last_error: `X post failed (${r.status}): ${JSON.stringify(r.json)}`,
+          last_error: errMsg,
           updated_at: new Date().toISOString(),
         })
         .eq("id", job.id);
 
       failed++;
+      results.push({ id: job.id, action: "failed", error: errMsg });
       continue;
     }
 
-    const tweetId = r.json?.data?.id ?? null;
+    const tweetId = (r.json?.data?.id as string | undefined) ?? null;
 
+    // ④ sent に更新
     await supabase
       .from("scheduled_posts")
       .update({
@@ -156,7 +188,8 @@ async function runOnce() {
       .eq("id", job.id);
 
     sent++;
+    results.push({ id: job.id, action: "sent", tweetId });
   }
 
-  return NextResponse.json({ ok: true, processed, sent, failed });
+  return NextResponse.json({ ok: true, processed, sent, failed, results });
 }
