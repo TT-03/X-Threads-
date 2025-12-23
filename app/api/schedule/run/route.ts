@@ -14,6 +14,22 @@ type ScheduledPost = {
   attempts: number | null;
 };
 
+function assertCron(req: Request) {
+  const expected = process.env.CRON_SECRET;
+
+  // CRON_SECRET が未設定なら「設定してください」で落とす（本番は必須にしたい）
+  if (!expected) {
+    return NextResponse.json({ error: "Missing env: CRON_SECRET" }, { status: 500 });
+  }
+
+  const auth = req.headers.get("authorization") || "";
+  if (auth !== `Bearer ${expected}`) {
+    return NextResponse.json({ error: "Unauthorized (cron only)" }, { status: 401 });
+  }
+
+  return null; // OK
+}
+
 async function postToX(accessToken: string, text: string) {
   const res = await fetch("https://api.x.com/2/tweets", {
     method: "POST",
@@ -29,10 +45,15 @@ async function postToX(accessToken: string, text: string) {
   return { ok: res.ok, status: res.status, json };
 }
 
-// ✅ GETでもPOSTでも動く（Vercel CronはGETが多い）
-export async function GET() {
+// ✅ Cron（GET）だけ保護する
+export async function GET(req: Request) {
+  const denied = assertCron(req);
+  if (denied) return denied;
+
   return runOnce();
 }
+
+// ✅ 手動テスト用：POSTは保護しない（必要なら後でGETと同じガードを入れる）
 export async function POST() {
   return runOnce();
 }
@@ -84,8 +105,7 @@ async function runOnce() {
       .select("id");
 
     if (lockErr || !lockRows || lockRows.length === 0) {
-      // 他で処理中 or 更新失敗
-      continue;
+      continue; // 他で処理中
     }
 
     // ② トークン取得（user_idごと）
