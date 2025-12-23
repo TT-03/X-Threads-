@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { getCookie } from "../../_lib/cookies";
 import { getSupabaseAdmin } from "../../_lib/supabaseAdmin";
 
 export const runtime = "nodejs";
@@ -30,14 +29,16 @@ async function postToX(accessToken: string, text: string) {
   return { ok: res.ok, status: res.status, json };
 }
 
+// ✅ GETでもPOSTでも動く（Vercel CronはGETが多い）
+export async function GET() {
+  return runOnce();
+}
 export async function POST() {
-  // 1) サーバー側で user_id を取得（OAuth callback で入れた HttpOnly cookie）
-  const userId = await getCookie("x_user_id");
-  if (!userId) {
-    return NextResponse.json({ error: "Missing cookie: x_user_id (連携し直してください)" }, { status: 401 });
-  }
+  return runOnce();
+}
 
-  // 2) Supabase Admin（service role）でDB操作
+async function runOnce() {
+  // サーバー環境変数チェック
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return NextResponse.json(
       { error: "Missing env: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY" },
@@ -46,91 +47,103 @@ export async function POST() {
   }
   const supabase = getSupabaseAdmin();
 
-  // 3) 期限到来の pending を1件だけ拾う（まずは最短確認用に1件）
   const nowIso = new Date().toISOString();
+
+  // ✅ 期限到来の pending を最大10件拾う（全ユーザー対象）
   const { data: rows, error: selErr } = await supabase
     .from("scheduled_posts")
     .select("id,user_id,provider,text,run_at,status,attempts")
-    .eq("user_id", userId)
     .eq("provider", "x")
     .eq("status", "pending")
     .lte("run_at", nowIso)
     .order("run_at", { ascending: true })
-    .limit(1);
+    .limit(10);
 
   if (selErr) {
     return NextResponse.json({ error: "Failed to select scheduled_posts", details: selErr }, { status: 500 });
   }
-  const post = (rows?.[0] as ScheduledPost | undefined);
-  if (!post) {
-    return NextResponse.json({ ok: true, message: "実行対象なし（pendingでrun_at<=nowがありません）" });
+
+  const jobs = (rows ?? []) as ScheduledPost[];
+  if (jobs.length === 0) {
+    return NextResponse.json({ ok: true, processed: 0, sent: 0, failed: 0, message: "実行対象なし" });
   }
 
-  // 4) 二重実行防止：pending→running に更新（status一致条件つき）
-  const { data: lockRows, error: lockErr } = await supabase
-    .from("scheduled_posts")
-    .update({ status: "running", updated_at: new Date().toISOString() })
-    .eq("id", post.id)
-    .eq("status", "pending")
-    .select("id");
+  let processed = 0;
+  let sent = 0;
+  let failed = 0;
 
-  if (lockErr) {
-    return NextResponse.json({ error: "Failed to lock scheduled_posts", details: lockErr }, { status: 500 });
-  }
-  if (!lockRows || lockRows.length === 0) {
-    return NextResponse.json({ ok: true, message: "他で処理中でした（ロック取得できず）" });
-  }
+  for (const job of jobs) {
+    processed++;
 
-  // 5) x_tokens からアクセストークン取得
-  const { data: tok, error: tokErr } = await supabase
-    .from("x_tokens")
-    .select("access_token")
-    .eq("user_id", userId)
-    .single();
+    // ① ロック：pending→running（二重実行防止）
+    const { data: lockRows, error: lockErr } = await supabase
+      .from("scheduled_posts")
+      .update({ status: "running", updated_at: new Date().toISOString() })
+      .eq("id", job.id)
+      .eq("status", "pending")
+      .select("id");
 
-  if (tokErr || !tok?.access_token) {
-    // running を failed に戻す
+    if (lockErr || !lockRows || lockRows.length === 0) {
+      // 他で処理中 or 更新失敗
+      continue;
+    }
+
+    // ② トークン取得（user_idごと）
+    const { data: tok, error: tokErr } = await supabase
+      .from("x_tokens")
+      .select("access_token")
+      .eq("user_id", job.user_id)
+      .single();
+
+    if (tokErr || !tok?.access_token) {
+      await supabase
+        .from("scheduled_posts")
+        .update({
+          status: "failed",
+          attempts: (job.attempts ?? 0) + 1,
+          last_error: "Missing access_token in x_tokens",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", job.id);
+
+      failed++;
+      continue;
+    }
+
+    // ③ 投稿
+    const r = await postToX(tok.access_token, job.text);
+
+    if (!r.ok) {
+      // 401は認証切れ（再連携必要）→ failedで止める
+      // 429などは本当はリトライしたいが、MVPは failed にして原因を見る
+      await supabase
+        .from("scheduled_posts")
+        .update({
+          status: "failed",
+          attempts: (job.attempts ?? 0) + 1,
+          last_error: `X post failed (${r.status}): ${JSON.stringify(r.json)}`,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", job.id);
+
+      failed++;
+      continue;
+    }
+
+    const tweetId = r.json?.data?.id ?? null;
+
+    // ④ sent に更新
     await supabase
       .from("scheduled_posts")
       .update({
-        status: "failed",
-        attempts: (post.attempts ?? 0) + 1,
-        last_error: "Missing access_token in x_tokens",
+        status: "sent",
+        tweet_id: tweetId,
         updated_at: new Date().toISOString(),
       })
-      .eq("id", post.id);
+      .eq("id", job.id);
 
-    return NextResponse.json({ error: "Missing access_token in x_tokens", details: tokErr }, { status: 500 });
+    sent++;
   }
 
-  // 6) Xに投稿
-  const r = await postToX(tok.access_token, post.text);
-
-  if (!r.ok) {
-    await supabase
-      .from("scheduled_posts")
-      .update({
-        status: "failed",
-        attempts: (post.attempts ?? 0) + 1,
-        last_error: `X post failed (${r.status}): ${JSON.stringify(r.json)}`,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", post.id);
-
-    return NextResponse.json({ error: "X post failed", status: r.status, details: r.json }, { status: 400 });
-  }
-
-  const tweetId = r.json?.data?.id ?? null;
-
-  // 7) sent に更新
-  await supabase
-    .from("scheduled_posts")
-    .update({
-      status: "sent",
-      tweet_id: tweetId,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", post.id);
-
-  return NextResponse.json({ ok: true, message: "予約を実行して投稿しました", scheduled_post_id: post.id, tweet_id: tweetId });
+  return NextResponse.json({ ok: true, processed, sent, failed });
 }
