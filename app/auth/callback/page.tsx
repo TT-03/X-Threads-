@@ -1,4 +1,3 @@
-// app/auth/callback/page.tsx
 "use client";
 
 import { useEffect } from "react";
@@ -10,38 +9,58 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+function safeNext(next: string | null) {
+  // オープンリダイレクト対策：アプリ内の相対パスだけ許可
+  if (next && next.startsWith("/") && !next.startsWith("//")) return next;
+  return "/app/compose";
+}
+
 export default function AuthCallbackPage() {
   const router = useRouter();
   const sp = useSearchParams();
 
   useEffect(() => {
-    // Supabaseのメールリンクは token_hash + type をクエリに付けることが多い
-    // （古い形式だと access_token 等が付くケースもあるので両対応）
     const token_hash = sp.get("token_hash");
-    const type = sp.get("type") as any; // "signup" / "magiclink" / "recovery" etc
-    const next = sp.get("next") || "/app/compose";
+    const type = sp.get("type") as
+      | "signup"
+      | "magiclink"
+      | "recovery"
+      | "invite"
+      | "email_change"
+      | null;
+
+    const code = sp.get("code");
+    const next = safeNext(sp.get("next"));
 
     (async () => {
       try {
+        // ① token_hash + type で来るパターン（メールテンプレをカスタムしている時によく使う）
         if (token_hash && type) {
-          const { error } = await supabase.auth.verifyOtp({
-            token_hash,
-            type,
-          });
+          const { error } = await supabase.auth.verifyOtp({ token_hash, type });
           if (error) throw error;
-        } else {
-          // もしURLに access_token が載るタイプの場合でも
-          // Supabase JS はURLからのセッション復元が効くことがあるので
-          // ここは何もしない（必要なら後で補強）
+          router.replace(next);
+          return;
         }
 
-        router.replace(next);
+        // ② code で来るパターン（PKCE/推奨）
+        if (code) {
+          const { error } = await supabase.auth.exchangeCodeForSession(code);
+          if (error) throw error;
+          router.replace(next);
+          return;
+        }
+
+        // どちらも無い＝リンク形式が想定外
+        throw new Error("Missing token_hash/type or code");
       } catch (e) {
-        router.replace(`/auth/error?m=${encodeURIComponent("認証に失敗しました。もう一度やり直してください。")}`);
+        router.replace(
+          `/auth/error?m=${encodeURIComponent(
+            "認証に失敗しました。もう一度メールのリンクからやり直してください。"
+          )}`
+        );
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [router, sp]);
 
   return (
     <main className="mx-auto max-w-md p-6">
