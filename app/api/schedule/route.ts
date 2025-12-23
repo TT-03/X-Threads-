@@ -7,9 +7,12 @@ export const runtime = "nodejs";
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const text = (body?.text ?? "").toString();
-    const provider = (body?.provider ?? "x").toString();
-    const runAt = (body?.runAt ?? "").toString();
+const text = (body?.text ?? "").toString();
+const provider = (body?.provider ?? "x").toString();
+
+// ✅ runAt / run_at 両対応
+const runAtRaw = body?.runAt ?? body?.run_at;
+const runAt = (runAtRaw ?? "").toString();
 
     // cookie（callbackで入れたやつ）
     const userId = await getCookie("x_user_id");
