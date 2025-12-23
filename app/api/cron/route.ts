@@ -14,6 +14,20 @@ type ScheduledPost = {
   attempts: number | null;
 };
 
+function assertCron(req: Request) {
+  const expected = process.env.CRON_SECRET;
+  if (!expected) {
+    return NextResponse.json({ error: "Missing env: CRON_SECRET" }, { status: 500 });
+  }
+
+  const auth = req.headers.get("authorization") || "";
+  if (auth !== `Bearer ${expected}`) {
+    return NextResponse.json({ error: "Unauthorized (cron only)" }, { status: 401 });
+  }
+
+  return null; // OK
+}
+
 async function postToX(accessToken: string, text: string) {
   const res = await fetch("https://api.x.com/2/tweets", {
     method: "POST",
@@ -29,10 +43,15 @@ async function postToX(accessToken: string, text: string) {
   return { ok: res.ok, status: res.status, json };
 }
 
-// ✅ GETでもPOSTでも動く（Vercel CronはGETが多い）
-export async function GET() {
+// ✅ Vercel Cron は GET が多いので、GET を「Cron専用で保護」する
+export async function GET(req: Request) {
+  const denied = assertCron(req);
+  if (denied) return denied;
+
   return runOnce();
 }
+
+// ✅ 手動テスト用：POST はいまは保護しない（必要なら後で同じ assertCron を入れる）
 export async function POST() {
   return runOnce();
 }
@@ -49,7 +68,7 @@ async function runOnce() {
 
   const nowIso = new Date().toISOString();
 
-  // ✅ 期限到来の pending を最大10件拾う（全ユーザー対象）
+  // 期限到来の pending を最大10件拾う（全ユーザー対象）
   const { data: rows, error: selErr } = await supabase
     .from("scheduled_posts")
     .select("id,user_id,provider,text,run_at,status,attempts")
@@ -75,20 +94,17 @@ async function runOnce() {
   for (const job of jobs) {
     processed++;
 
-    // ① ロック：pending→running（二重実行防止）
-    const { data: lockRows, error: lockErr } = await supabase
+    // ロック：pending→running（二重実行防止）
+    const { data: lockRows } = await supabase
       .from("scheduled_posts")
       .update({ status: "running", updated_at: new Date().toISOString() })
       .eq("id", job.id)
       .eq("status", "pending")
       .select("id");
 
-    if (lockErr || !lockRows || lockRows.length === 0) {
-      // 他で処理中 or 更新失敗
-      continue;
-    }
+    if (!lockRows || lockRows.length === 0) continue;
 
-    // ② トークン取得（user_idごと）
+    // トークン取得（user_idごと）
     const { data: tok, error: tokErr } = await supabase
       .from("x_tokens")
       .select("access_token")
@@ -110,7 +126,7 @@ async function runOnce() {
       continue;
     }
 
-    // ③ 投稿
+    // 投稿
     const r = await postToX(tok.access_token, job.text);
 
     if (!r.ok) {
@@ -130,7 +146,7 @@ async function runOnce() {
 
     const tweetId = r.json?.data?.id ?? null;
 
-    // ④ sent に更新
+    // sent に更新
     await supabase
       .from("scheduled_posts")
       .update({
