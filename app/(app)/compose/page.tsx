@@ -174,12 +174,14 @@ async function schedule() {
     const res = await fetch("/api/schedule", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        provider: "x",
-        text: trimmed,
-        run_at: runAt,
-        runAt, // ← これにする（run_at ではなく）
-      }),
+body: JSON.stringify({
+  provider: "x",
+  text: trimmed,
+
+  // ✅ 当面は両方送る（サーバ側が runAt/run_at どちらでも受けられるように）
+  runAt,
+  run_at: runAt,
+}),
     });
 
     const data = await res.json().catch(() => ({} as any));
