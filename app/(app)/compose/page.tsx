@@ -23,6 +23,8 @@ export default function ComposePage() {
   const [platform, setPlatform] = useState<"x" | "threads">("x");
   const [toast, setToast] = useState<ToastState | null>(null);
   const [isPosting, setIsPosting] = useState(false);
+  const [isScheduling, setIsScheduling] = useState(false);
+
 
   // ✅ 追加：レート制限（429）カウントダウン
   const [rateLimitUntil, setRateLimitUntil] = useState<number | null>(null);
@@ -148,13 +150,73 @@ export default function ComposePage() {
     }
   }
 
-  function schedule() {
+  async function schedule() {
+  if (isScheduling || isPosting) return;
+
+  if (platform !== "x") {
     showToast({
       kind: "info",
-      title: "予約機能は準備中です",
-      detail: "現状はUIのみ（DB/ジョブキューは次段階で対応）",
+      title: "Threadsは準備中です",
+      detail: "今はXのみ予約できます。",
     });
+    return;
   }
+
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  if (countXChars(trimmed) > 280) {
+    showToast({
+      kind: "error",
+      title: "文字数オーバーです",
+      detail: "Xは280文字以内にしてください。",
+    });
+    return;
+  }
+
+  setIsScheduling(true);
+
+  try {
+    const runAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10分後
+
+    const res = await fetch("/api/schedule", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "x",
+        text: trimmed,
+        runAt,
+      }),
+    });
+
+    const data = await res.json().catch(() => ({} as any));
+
+    if (!res.ok) {
+      const msg =
+        (typeof data?.error === "string" && data.error) ||
+        (typeof data?.message === "string" && data.message) ||
+        "予約に失敗しました。";
+      showToast({ kind: "error", title: "予約に失敗しました", detail: String(msg) });
+      return;
+    }
+
+    showToast({
+      kind: "success",
+      title: "予約しました",
+      detail: `ID: ${data?.scheduled?.id ?? "-"} / 実行: ${data?.scheduled?.run_at ?? runAt}`,
+    });
+
+    setText("");
+  } catch {
+    showToast({
+      kind: "error",
+      title: "通信エラー",
+      detail: "ネットワーク状況を確認して、もう一度お試しください。",
+    });
+  } finally {
+    setIsScheduling(false);
+  }
+}
+
 
   return (
     <section className="space-y-4">
@@ -210,9 +272,9 @@ export default function ComposePage() {
           <button
             className="rounded-2xl bg-neutral-100 px-3 py-3 text-sm font-semibold text-neutral-800 active:bg-neutral-200 disabled:opacity-40"
             onClick={schedule}
-            disabled={isPosting || !text.trim()}
+            disabled={isPosting || isScheduling || !text.trim() || platform !== "x"}
           >
-            予約に入れる
+            {isScheduling ? "予約中…" : "予約に入れる"}
           </button>
         </div>
 
