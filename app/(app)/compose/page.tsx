@@ -177,7 +177,7 @@ async function schedule() {
       body: JSON.stringify({
         provider: "x",
         text: trimmed,
-        run_at: runAt, // ✅ runAt → run_at にする
+        runAt, // ← これにする（run_at ではなく）
       }),
     });
 
