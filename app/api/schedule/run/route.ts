@@ -30,10 +30,17 @@ async function postToX(accessToken: string, text: string) {
 }
 
 // ✅ GETでもPOSTでも動く（Vercel CronはGETが多い）
-export async function GET() {
-  return runOnce();
+export async function GET(req: Request) {
+  try {
+    assertCron(req); // ✅ ★ここ
+  } catch {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  return runOnce(); // ← POST() じゃなく runOnce を直接呼ぶのがスッキリ
 }
-export async function POST() {
+
+export async function POST(req: Request) {
+  // 手動実行も保護したいならここにも assertCron(req) を入れる
   return runOnce();
 }
 
