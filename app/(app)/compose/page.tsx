@@ -150,33 +150,26 @@ export default function ComposePage() {
     }
   }
 
-  async function schedule() {
+async function schedule() {
   if (isScheduling || isPosting) return;
 
   if (platform !== "x") {
-    showToast({
-      kind: "info",
-      title: "Threadsは準備中です",
-      detail: "今はXのみ予約できます。",
-    });
+    showToast({ kind: "info", title: "Threadsは準備中です", detail: "今はXのみ予約できます。" });
     return;
   }
 
   const trimmed = text.trim();
   if (!trimmed) return;
+
   if (countXChars(trimmed) > 280) {
-    showToast({
-      kind: "error",
-      title: "文字数オーバーです",
-      detail: "Xは280文字以内にしてください。",
-    });
+    showToast({ kind: "error", title: "文字数オーバーです", detail: "Xは280文字以内にしてください。" });
     return;
   }
 
   setIsScheduling(true);
 
   try {
-    const runAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10分後
+    const runAt = new Date(Date.now() + 2 * 60 * 1000).toISOString(); // 2分後
 
     const res = await fetch("/api/schedule", {
       method: "POST",
@@ -184,7 +177,7 @@ export default function ComposePage() {
       body: JSON.stringify({
         provider: "x",
         text: trimmed,
-        runAt,
+        run_at: runAt, // ✅ runAt → run_at にする
       }),
     });
 
@@ -207,11 +200,7 @@ export default function ComposePage() {
 
     setText("");
   } catch {
-    showToast({
-      kind: "error",
-      title: "通信エラー",
-      detail: "ネットワーク状況を確認して、もう一度お試しください。",
-    });
+    showToast({ kind: "error", title: "通信エラー", detail: "ネットワーク状況を確認して、もう一度お試しください。" });
   } finally {
     setIsScheduling(false);
   }
