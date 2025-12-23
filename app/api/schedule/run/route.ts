@@ -1,4 +1,3 @@
-// test
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "../../_lib/supabaseAdmin";
 
@@ -15,20 +14,22 @@ type ScheduledPost = {
   attempts: number | null;
 };
 
-function assertCron(req: Request) {
-  const expected = process.env.CRON_SECRET;
+function requireCronAuth(req: Request) {
+  const secret = process.env.CRON_SECRET;
 
-  // CRON_SECRET が未設定なら「設定してください」で落とす（本番は必須にしたい）
-  if (!expected) {
-    return NextResponse.json({ error: "Missing env: CRON_SECRET" }, { status: 500 });
+  // 本番で未設定は危険なので止める（ローカルは未設定でも動かせる）
+  if (!secret) {
+    if (process.env.NODE_ENV === "production") {
+      return NextResponse.json({ error: "Missing env: CRON_SECRET" }, { status: 500 });
+    }
+    return null;
   }
 
   const auth = req.headers.get("authorization") || "";
-  if (auth !== `Bearer ${expected}`) {
-    return NextResponse.json({ error: "Unauthorized (cron only)" }, { status: 401 });
+  if (auth !== `Bearer ${secret}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-
-  return null; // OK
+  return null;
 }
 
 async function postToX(accessToken: string, text: string) {
@@ -46,29 +47,31 @@ async function postToX(accessToken: string, text: string) {
   return { ok: res.ok, status: res.status, json };
 }
 
-// ✅ Cron（GET）だけ保護する
+// ✅ Cron は GET で呼ぶので GET を本命にする
 export async function GET(req: Request) {
-  return NextResponse.json({ debug: "guard-version-1" }, { status: 401 });
+  const guard = requireCronAuth(req);
+  if (guard) return guard;
+  return runOnce();
 }
 
-// ✅ 手動テスト用：POSTは保護しない（必要なら後でGETと同じガードを入れる）
-export async function POST() {
+// 手動実行などで POST も許可したい場合
+export async function POST(req: Request) {
+  const guard = requireCronAuth(req);
+  if (guard) return guard;
   return runOnce();
 }
 
 async function runOnce() {
-  // サーバー環境変数チェック
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return NextResponse.json(
       { error: "Missing env: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY" },
       { status: 500 }
     );
   }
-  const supabase = getSupabaseAdmin();
 
+  const supabase = getSupabaseAdmin();
   const nowIso = new Date().toISOString();
 
-  // ✅ 期限到来の pending を最大10件拾う（全ユーザー対象）
   const { data: rows, error: selErr } = await supabase
     .from("scheduled_posts")
     .select("id,user_id,provider,text,run_at,status,attempts")
@@ -94,7 +97,6 @@ async function runOnce() {
   for (const job of jobs) {
     processed++;
 
-    // ① ロック：pending→running（二重実行防止）
     const { data: lockRows, error: lockErr } = await supabase
       .from("scheduled_posts")
       .update({ status: "running", updated_at: new Date().toISOString() })
@@ -102,11 +104,8 @@ async function runOnce() {
       .eq("status", "pending")
       .select("id");
 
-    if (lockErr || !lockRows || lockRows.length === 0) {
-      continue; // 他で処理中
-    }
+    if (lockErr || !lockRows || lockRows.length === 0) continue;
 
-    // ② トークン取得（user_idごと）
     const { data: tok, error: tokErr } = await supabase
       .from("x_tokens")
       .select("access_token")
@@ -128,7 +127,6 @@ async function runOnce() {
       continue;
     }
 
-    // ③ 投稿
     const r = await postToX(tok.access_token, job.text);
 
     if (!r.ok) {
@@ -148,7 +146,6 @@ async function runOnce() {
 
     const tweetId = r.json?.data?.id ?? null;
 
-    // ④ sent に更新
     await supabase
       .from("scheduled_posts")
       .update({
