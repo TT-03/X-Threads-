@@ -47,10 +47,7 @@ async function postToX(accessToken: string, text: string) {
 
 // ✅ Cron（GET）だけ保護する
 export async function GET(req: Request) {
-  const denied = assertCron(req);
-  if (denied) return denied;
-
-  return runOnce();
+  return NextResponse.json({ debug: "guard-version-1" }, { status: 401 });
 }
 
 // ✅ 手動テスト用：POSTは保護しない（必要なら後でGETと同じガードを入れる）
