@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCookie, setHttpOnlyCookie, clearCookie } from "../../../_lib/cookies";
-import { supabaseAdmin } from "../../../_lib/supabaseAdmin";
+import { getSupabaseAdmin } from "../../../_lib/supabaseAdmin";
 
 // 念のため（Buffer使うので）
 export const runtime = "nodejs";
@@ -30,12 +30,6 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Missing env: X_CLIENT_ID / X_REDIRECT_URI" }, { status: 500 });
   }
 
-  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    return NextResponse.json(
-      { error: "Missing env: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY" },
-      { status: 500 }
-    );
-  }
 
   const form = new URLSearchParams();
   form.set("code", code);
@@ -87,6 +81,17 @@ export async function GET(req: Request) {
     typeof expiresIn === "number"
       ? new Date(Date.now() + expiresIn * 1000).toISOString()
       : null;
+
+  // ✅ ここでチェック（ここが一番安全）
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return NextResponse.json(
+      { error: "Missing env: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY" },
+      { status: 500 }
+    );
+  }
+
+ // ✅ ★ここに追加（GETの中で作る）
+  const supabaseAdmin = getSupabaseAdmin();
 
   const { error: upsertErr } = await supabaseAdmin.from("x_tokens").upsert({
     user_id: userId,
