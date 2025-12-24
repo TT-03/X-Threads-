@@ -13,6 +13,7 @@ jobs:
     steps:
       - name: Call schedule runner endpoint
         run: |
+          echo "URL=[$SCHEDULE_RUN_URL]"
           curl -fsS \
             -H "Authorization: Bearer $CRON_SECRET" \
             "$SCHEDULE_RUN_URL"
