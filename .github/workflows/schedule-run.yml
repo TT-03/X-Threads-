@@ -2,8 +2,8 @@ name: Schedule Runner
 
 on:
   schedule:
-    - cron: "* * * * *"  # –ˆ•ª
-  workflow_dispatch: {}   # è“®Às‚àc‚·
+    - cron: "* * * * *"   # –ˆ•ª
+  workflow_dispatch: {}    # è“®Às‚à‚Å‚«‚é
 
 jobs:
   run:
@@ -13,5 +13,4 @@ jobs:
         run: |
           curl -fsS \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.APP_URL }}/api/schedule/run"
-          echo ""
+            "https://x-threads-roan.vercel.app/api/schedule/run"
