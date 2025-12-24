@@ -43,19 +43,24 @@ jobs:
           print(f"path={p.path}")
           PY
 
-      - name: Call schedule runner endpoint
+      - name: Call schedule runner endpoint (with requestId)
         shell: bash
         run: |
           set -euo pipefail
 
-          # body は表示、ステータスも表示（ヘッダは出さない）
-          tmp="$(mktemp)"
-          code=$(
-            curl -sS -o "$tmp" -w "%{http_code}" \
-              --retry 3 --retry-all-errors --max-time 30 \
-              -H "Authorization: Bearer ${CRON_SECRET}" \
-              "${SCHEDULE_RUN_URL}"
-          )
-          echo "http_code=${code}"
-          cat "$tmp"
-          echo
+          REQUEST_ID="$(python - <<'PY'
+          import uuid
+          print(uuid.uuid4())
+          PY
+          )"
+          echo "requestId=${REQUEST_ID}"
+
+          # -sS: 静か＋エラー表示
+          # --fail-with-body: 4xx/5xxでもレスポンスbodyを表示（デバッグに便利）
+          # -w: HTTPコードと所要時間を最後に出す
+          curl -sS --fail-with-body --retry 3 --retry-all-errors --max-time 30 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            -H "X-Request-Id: ${REQUEST_ID}" \
+            -H "User-Agent: schedule-runner/gh-actions" \
+            -w "\nhttp_code=%{http_code} time_total=%{time_total}\n" \
+            "${SCHEDULE_RUN_URL}"

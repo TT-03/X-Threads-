@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "../../_lib/supabaseAdmin";
 
@@ -20,6 +21,10 @@ type JobResult = {
   tweetId?: string | null;
   error?: string;
 };
+
+function clampError(s: string, max = 1500) {
+  return s.length > max ? s.slice(0, max) : s;
+}
 
 function requireCronAuth(req: Request) {
   const secret = process.env.CRON_SECRET;
@@ -47,6 +52,41 @@ async function postToX(accessToken: string, text: string) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ text }),
+    cache: "no-store",
+  });
+
+  const json = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, json };
+}
+
+async function refreshXToken(refreshToken: string) {
+  const clientId = process.env.X_CLIENT_ID;
+  const clientSecret = process.env.X_CLIENT_SECRET; // PKCEだけなら無いこともある
+
+  if (!clientId) {
+    return { ok: false, status: 500, json: { error: "Missing env: X_CLIENT_ID" } };
+  }
+
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+    client_id: clientId,
+  });
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/x-www-form-urlencoded",
+  };
+
+  // client_secret を使う構成なら Basic 認証が必要なケースが多い
+  if (clientSecret) {
+    const basic = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+    headers["Authorization"] = `Basic ${basic}`;
+  }
+
+  const res = await fetch("https://api.x.com/2/oauth2/token", {
+    method: "POST",
+    headers,
+    body,
     cache: "no-store",
   });
 
@@ -91,10 +131,7 @@ async function runOnce() {
     .limit(10);
 
   if (selErr) {
-    return NextResponse.json(
-      { error: "Failed to select scheduled_posts", details: selErr },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to select scheduled_posts", details: selErr }, { status: 500 });
   }
 
   const jobs = (rows ?? []) as ScheduledPost[];
@@ -133,12 +170,13 @@ async function runOnce() {
     // ② トークン取得
     const { data: tok, error: tokErr } = await supabase
       .from("x_tokens")
-      .select("access_token")
+      .select("access_token, refresh_token")
       .eq("user_id", job.user_id)
       .single();
 
     if (tokErr || !tok?.access_token) {
       const errMsg = "Missing access_token in x_tokens";
+
       await supabase
         .from("scheduled_posts")
         .update({
@@ -154,11 +192,93 @@ async function runOnce() {
       continue;
     }
 
-    // ③ 投稿
-    const r = await postToX(tok.access_token, job.text);
+    // ③ 投稿（401ならrefresh→再試行1回）
+    let r = await postToX(tok.access_token, job.text);
 
+    if (!r.ok && r.status === 401) {
+      // refresh_token が無いなら復旧不能（要再連携）
+      if (!tok.refresh_token) {
+        const errMsg = "X post failed (401): refresh_token missing (need re-auth)";
+
+        await supabase
+          .from("scheduled_posts")
+          .update({
+            status: "failed",
+            attempts: (job.attempts ?? 0) + 1,
+            last_error: errMsg,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", job.id);
+
+        failed++;
+        results.push({ id: job.id, action: "failed", error: errMsg });
+        continue;
+      }
+
+      // refresh 実行
+      const rr = await refreshXToken(tok.refresh_token);
+
+      if (!rr.ok) {
+        const errMsg = clampError(`X refresh failed (${rr.status}): ${JSON.stringify(rr.json)}`);
+
+        await supabase
+          .from("scheduled_posts")
+          .update({
+            status: "failed",
+            attempts: (job.attempts ?? 0) + 1,
+            last_error: errMsg,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", job.id);
+
+        failed++;
+        results.push({ id: job.id, action: "failed", error: errMsg });
+        continue;
+      }
+
+      const newAccess = rr.json?.access_token as string | undefined;
+      const newRefresh = (rr.json?.refresh_token as string | undefined) ?? tok.refresh_token;
+      const expiresIn = rr.json?.expires_in as number | undefined;
+
+      if (!newAccess) {
+        const errMsg = clampError(`X refresh ok but access_token missing: ${JSON.stringify(rr.json)}`);
+
+        await supabase
+          .from("scheduled_posts")
+          .update({
+            status: "failed",
+            attempts: (job.attempts ?? 0) + 1,
+            last_error: errMsg,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", job.id);
+
+        failed++;
+        results.push({ id: job.id, action: "failed", error: errMsg });
+        continue;
+      }
+
+      // x_tokens を更新保存（次回以降も生きるように）
+      const expiresAt =
+        typeof expiresIn === "number" ? new Date(Date.now() + expiresIn * 1000).toISOString() : null;
+
+      await supabase
+        .from("x_tokens")
+        .update({
+          access_token: newAccess,
+          refresh_token: newRefresh,
+          ...(expiresAt ? { expires_at: expiresAt } : {}),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("user_id", job.user_id);
+
+      // 再投稿（1回だけ）
+      r = await postToX(newAccess, job.text);
+    }
+
+    // ここから先は「最終結果」で判定
     if (!r.ok) {
-      const errMsg = `X post failed (${r.status}): ${JSON.stringify(r.json)}`;
+      const errMsg = clampError(`X post failed (${r.status}): ${JSON.stringify(r.json)}`);
 
       await supabase
         .from("scheduled_posts")
