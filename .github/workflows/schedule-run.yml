@@ -2,8 +2,8 @@ name: Schedule Runner
 
 on:
   schedule:
-    - cron: "*/1 * * * *"
-  workflow_dispatch:
+    - cron: "* * * * *"  # –ˆ•ª
+  workflow_dispatch: {}   # è“®Às‚àc‚·
 
 jobs:
   run:
