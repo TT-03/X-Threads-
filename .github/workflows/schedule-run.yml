@@ -2,7 +2,9 @@ name: Schedule Runner
 
 on:
   schedule:
-    - cron: "* * * * *"   # 毎分
+    # GitHub Actions の cron は「毎分」が不安定/制限されることがあります。
+    # まずは確実に動かすため */5 を推奨（動いたら */1 に戻してOK）
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -12,5 +14,8 @@ jobs:
       - name: Call schedule runner endpoint
         run: |
           curl -fsS \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "https://x-threads-roan.vercel.app/api/schedule/run"
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$SCHEDULE_RUN_URL"
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          SCHEDULE_RUN_URL: ${{ secrets.SCHEDULE_RUN_URL }}
