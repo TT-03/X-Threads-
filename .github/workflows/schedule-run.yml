@@ -2,21 +2,43 @@ name: Schedule Runner
 
 on:
   schedule:
-    # GitHub Actions の cron は「毎分」が不安定/制限されることがあります。
-    # まずは確実に動かすため */5 を推奨（動いたら */1 に戻してOK）
     - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    env:
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+      SCHEDULE_RUN_URL: ${{ secrets.SCHEDULE_RUN_URL }}
+
     steps:
-      - name: Call schedule runner endpoint
+      - name: Validate secrets exist
+        shell: bash
         run: |
-          echo "URL=[$SCHEDULE_RUN_URL]"
-          curl -fsS \
-            -H "Authorization: Bearer $CRON_SECRET" \
-            "$SCHEDULE_RUN_URL"
-        env:
-          CRON_SECRET: ${{ secrets.CRON_SECRET }}
-          SCHEDULE_RUN_URL: ${{ secrets.SCHEDULE_RUN_URL }}
+          if [ -z "${SCHEDULE_RUN_URL:-}" ]; then echo "❌ Missing SCHEDULE_RUN_URL"; exit 1; fi
+          if [ -z "${CRON_SECRET:-}" ]; then echo "❌ Missing CRON_SECRET"; exit 1; fi
+          echo "✅ secrets exist"
+
+      - name: Show URL parts (safe)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, urllib.parse
+          u = os.environ["SCHEDULE_RUN_URL"]
+          p = urllib.parse.urlparse(u)
+          print(f"scheme={p.scheme}")
+          print(f"host={p.netloc}")
+          print(f"path={p.path}")
+          PY
+
+      - name: Call schedule runner endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Calling..."
+          curl -fsS --retry 3 --retry-all-errors --max-time 30 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${SCHEDULE_RUN_URL}"
