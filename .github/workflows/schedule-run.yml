@@ -15,6 +15,15 @@ jobs:
       SCHEDULE_RUN_URL: ${{ secrets.SCHEDULE_RUN_URL }}
 
     steps:
+      - name: Debug trigger
+        shell: bash
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "ref=${{ github.ref }}"
+          echo "run_id=${{ github.run_id }}"
+          echo "run_number=${{ github.run_number }}"
+          date -u
+
       - name: Validate secrets exist
         shell: bash
         run: |
