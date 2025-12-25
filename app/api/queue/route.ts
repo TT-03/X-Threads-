@@ -47,7 +47,7 @@ export async function GET() {
     .from("scheduled_posts")
     .select("id, provider, text, run_at, status, attempts, last_error, tweet_id, updated_at")
     .eq("user_id", xUserId)
-    .order("run_at", { ascending: true })
+    .order("run_at", { ascending: false })
     .limit(200);
 
   if (error) {
