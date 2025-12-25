@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const cookieStore = cookies();
+  const cookieStore = await cookies();
   const xUserId = cookieStore.get("x_user_id")?.value;
 
   if (!xUserId) {
