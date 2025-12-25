@@ -88,9 +88,24 @@ export default function QueuePage() {
 
   const filteredItems = useMemo(() => {
   if (filter === "all") return items;
-  if (filter === "pending") return items.filter((it) => it.status === "pending" || it.status === "running");
+
+  if (filter === "pending") {
+    const arr = items.filter((it) => it.status === "pending" || it.status === "running");
+
+    // ✅ running を優先、その後 run_at 新しい順
+    arr.sort((a, b) => {
+      const pa = a.status === "running" ? 0 : 1;
+      const pb = b.status === "running" ? 0 : 1;
+      if (pa !== pb) return pa - pb;
+      return new Date(b.run_at).getTime() - new Date(a.run_at).getTime();
+    });
+
+    return arr;
+  }
+
   return items.filter((it) => it.status === filter);
 }, [items, filter]);
+
 
   const filterButtonStyle = (active: boolean) =>
     ({
