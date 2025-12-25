@@ -16,7 +16,32 @@ export async function GET() {
     );
   }
 
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return NextResponse.json(
+      { error: "Missing env: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY" },
+      { status: 500 }
+    );
+  }
+
   const supabase = getSupabaseAdmin();
+
+  // ✅ 追加：x_tokens が無ければ未連携扱い（cookie残っても弾く）
+  const { data: tok, error: tokErr } = await supabase
+    .from("x_tokens")
+    .select("access_token")
+    .eq("user_id", xUserId)
+    .maybeSingle();
+
+  if (tokErr) {
+    return NextResponse.json({ error: tokErr.message }, { status: 500 });
+  }
+
+  if (!tok?.access_token) {
+    return NextResponse.json(
+      { error: "Not connected to X (missing x_tokens)" },
+      { status: 401 }
+    );
+  }
 
   const { data, error } = await supabase
     .from("scheduled_posts")
