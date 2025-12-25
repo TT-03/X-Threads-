@@ -41,13 +41,12 @@ export default function QueuePage() {
       try {
         setLoading(true);
         setError(null);
-        setItems([]); // ✅ 前回表示が残らないように先に消す
+        setItems([]); // 前回表示を残さない
 
         const res = await fetch("/api/queue", { cache: "no-store" });
         const json = await res.json().catch(() => ({}));
 
         if (!res.ok) {
-          // ✅ 401でも一覧を残さない
           if (alive) setItems([]);
           throw new Error(json?.error ?? `HTTP ${res.status}`);
         }
@@ -74,7 +73,6 @@ export default function QueuePage() {
 
       {loading ? <div style={{ marginTop: 16, opacity: 0.7 }}>Loading…</div> : null}
 
-      {/* ✅ 未連携は「案内」表示にする */}
       {error ? (
         <div style={{ marginTop: 16, padding: 12, border: "1px solid #f99", borderRadius: 12 }}>
           <div style={{ fontWeight: 700 }}>{notConnected ? "未連携" : "Error"}</div>
@@ -107,8 +105,16 @@ export default function QueuePage() {
 
       <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
         {items.map((it) => {
-          const tweetUrl = it.tweet_id ? `https://x.com/i/web/status/${it.tweet_id}` : null;
           const isAuthRequired = it.status === "auth_required";
+
+          // ✅ (1) AUTH REQUIRED のときは「投稿を開く」を出さない（tweet_idがあっても念のため）
+          const tweetUrl =
+            !isAuthRequired && it.tweet_id ? `https://x.com/i/web/status/${it.tweet_id}` : null;
+
+          // ✅ (2) auth_required のときだけ last_error を短くする
+          const errShort = it.last_error
+            ? short(it.last_error, isAuthRequired ? 80 : 140)
+            : null;
 
           return (
             <div key={it.id} style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12 }}>
@@ -134,7 +140,7 @@ export default function QueuePage() {
               >
                 <span>attempts: {it.attempts ?? 0}</span>
 
-                {it.last_error ? <span>error: {short(it.last_error)}</span> : null}
+                {errShort ? <span>error: {errShort}</span> : null}
 
                 {tweetUrl ? (
                   <a href={tweetUrl} target="_blank" rel="noreferrer">
@@ -142,7 +148,6 @@ export default function QueuePage() {
                   </a>
                 ) : null}
 
-                {/* ✅ auth_required のときだけ再連携リンク */}
                 {isAuthRequired ? (
                   <a href="/api/auth/x/start" style={{ fontWeight: 700 }}>
                     Xを再連携する
