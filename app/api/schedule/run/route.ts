@@ -26,7 +26,7 @@ function clampError(s: string, max = 1500) {
   return s.length > max ? s.slice(0, max) : s;
 }
 
-// ✅ 追加：リトライ運用の最小ルール
+// ✅ リトライ運用の最小ルール
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 5 * 60 * 1000;
 
@@ -171,7 +171,6 @@ async function runOnce() {
     if (attempts >= MAX_ATTEMPTS) {
       const errMsg = `max attempts reached: ${attempts}`;
 
-      // pendingのまま残すと永遠に拾うので failed に倒す（※status条件で安全に）
       await supabase
         .from("scheduled_posts")
         .update({
@@ -239,15 +238,14 @@ async function runOnce() {
           await supabase
             .from("scheduled_posts")
             .update({
-              status: "failed",
+              status: "auth_required",
               attempts: (job.attempts ?? 0) + 1,
               last_error: errMsg,
               updated_at: new Date().toISOString(),
             })
             .eq("id", job.id);
 
-          failed++;
-          results.push({ id: job.id, action: "failed", error: errMsg });
+          results.push({ id: job.id, action: "skipped", error: errMsg });
           continue;
         }
 
@@ -273,21 +271,21 @@ async function runOnce() {
           continue;
         }
 
+        // ✅ refresh の 4xx 等は「再連携が必要」扱い
         if (!rr.ok) {
           const errMsg = clampError(`X refresh failed (${rr.status}): ${JSON.stringify(rr.json)}`);
 
           await supabase
             .from("scheduled_posts")
             .update({
-              status: "failed",
+              status: "auth_required",
               attempts: (job.attempts ?? 0) + 1,
               last_error: errMsg,
               updated_at: new Date().toISOString(),
             })
             .eq("id", job.id);
 
-          failed++;
-          results.push({ id: job.id, action: "failed", error: errMsg });
+          results.push({ id: job.id, action: "skipped", error: errMsg });
           continue;
         }
 
@@ -301,15 +299,14 @@ async function runOnce() {
           await supabase
             .from("scheduled_posts")
             .update({
-              status: "failed",
+              status: "auth_required",
               attempts: (job.attempts ?? 0) + 1,
               last_error: errMsg,
               updated_at: new Date().toISOString(),
             })
             .eq("id", job.id);
 
-          failed++;
-          results.push({ id: job.id, action: "failed", error: errMsg });
+          results.push({ id: job.id, action: "skipped", error: errMsg });
           continue;
         }
 
@@ -352,6 +349,22 @@ async function runOnce() {
     // ここから先は「最終結果」で判定
     if (!r.ok) {
       const errMsg = clampError(`X post failed (${r.status}): ${JSON.stringify(r.json)}`);
+
+      // ✅ 401 は再連携が必要扱い
+      if (r.status === 401) {
+        await supabase
+          .from("scheduled_posts")
+          .update({
+            status: "auth_required",
+            attempts: (job.attempts ?? 0) + 1,
+            last_error: errMsg,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", job.id);
+
+        results.push({ id: job.id, action: "skipped", error: errMsg });
+        continue;
+      }
 
       // ✅ 429/5xx/timeout系は延期（pendingに戻してrun_atを未来へ）
       if (isRetryableHttpStatus(r.status)) {
