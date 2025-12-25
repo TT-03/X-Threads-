@@ -105,28 +105,30 @@ export async function GET(req: Request) {
   }
 
   // ✅ 追加：再連携成功時、auth_required を pending に戻して早めに再実行させる
-  try {
-    const runAtSoon = new Date(Date.now() + 30_000).toISOString();
+try {
+  const runAtSoon = new Date(Date.now() + 30_000).toISOString();
 
-    const { error: bumpErr } = await supabaseAdmin
-      .from("scheduled_posts")
-      .update({
-        status: "pending",
-        run_at: runAtSoon,
-        attempts: 0,
-        last_error: null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("user_id", userId)
-      .eq("status", "auth_required");
+  const { data, error: bumpErr } = await supabaseAdmin
+    .from("scheduled_posts")
+    .update({
+      status: "pending",
+      run_at: runAtSoon,
+      attempts: 0,
+      last_error: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("user_id", userId)
+    .eq("status", "auth_required")
+    .select("id");
 
-    if (bumpErr) {
-      // ここはログイン自体は成功させたいので「失敗しても継続」
-      console.error("Failed to bump auth_required -> pending:", bumpErr);
-    }
-  } catch (e) {
-    console.error("Exception while bumping auth_required -> pending:", e);
+  if (bumpErr) {
+    console.error("Failed to bump auth_required -> pending:", bumpErr);
+  } else {
+    console.log(`bumped auth_required -> pending: ${data?.length ?? 0} jobs`);
   }
+} catch (e) {
+  console.error("Exception while bumping auth_required -> pending:", e);
+}
 
   // UI用：user_id を Cookieに入れる（これで予約APIが user_id を使える）
   await setHttpOnlyCookie("x_user_id", userId, 60 * 60 * 24 * 30);
