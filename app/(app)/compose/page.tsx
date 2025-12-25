@@ -196,10 +196,12 @@ body: JSON.stringify({
     }
 
     showToast({
-      kind: "success",
-      title: "予約しました",
-      detail: `ID: ${data?.scheduled?.id ?? "-"} / 実行: ${data?.scheduled?.run_at ?? runAt}`,
-    });
+  kind: "success",
+  title: "予約しました",
+  detail: `ID: ${data?.scheduled?.id ?? "-"} / 実行: ${data?.scheduled?.run_at ?? runAt}`,
+  actionLabel: "予約一覧を見る",
+  onAction: () => router.push("/queue"),
+});
 
     setText("");
   } catch {
