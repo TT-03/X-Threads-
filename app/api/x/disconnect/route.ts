@@ -6,18 +6,14 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function clearCookie(res: NextResponse, name: string) {
-  res.cookies.set(name, "", {
-    path: "/",
-    maxAge: 0,
-  });
+  res.cookies.set(name, "", { path: "/", maxAge: 0 });
 }
 
 async function handler() {
-  // cookieに x_user_id が残ってると「未連携なのに一覧が出る」ので必ず消す
   const cookieStore = await cookies();
   const xUserId = cookieStore.get("x_user_id")?.value;
 
-  // （任意）DB側のトークンも消す：これで完全に未連携状態になる
+  // （任意）DB側のトークンも削除して完全に未連携へ
   if (xUserId && process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
     const supabase = getSupabaseAdmin();
     await supabase.from("x_tokens").delete().eq("user_id", xUserId);
@@ -25,14 +21,14 @@ async function handler() {
 
   const res = NextResponse.json({ ok: true });
 
-  // ✅ あなたの現状のcookie
+  // 既存のcookie
   clearCookie(res, "x_access_token");
   clearCookie(res, "x_refresh_token");
 
-  // ✅ 予約一覧の判定で使っているcookie（これが残ってるのが原因）
+  // 未連携でも一覧が出る原因cookie
   clearCookie(res, "x_user_id");
 
-  // ✅ もし使ってるなら一緒に（無害なので消してOK）
+  // 使ってる可能性があるもの（無害なので一緒に）
   clearCookie(res, "x_username");
   clearCookie(res, "x_connected");
 
