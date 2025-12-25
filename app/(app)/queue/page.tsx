@@ -78,7 +78,7 @@ export default function QueuePage() {
     let auth_required = 0;
 
     for (const it of items) {
-      if (it.status === "pending") pending++;
+      if (it.status === "pending" || it.status === "running") pending++;
       if (it.status === "failed") failed++;
       if (it.status === "auth_required") auth_required++;
     }
@@ -87,9 +87,10 @@ export default function QueuePage() {
   }, [items]);
 
   const filteredItems = useMemo(() => {
-    if (filter === "all") return items;
-    return items.filter((it) => it.status === filter);
-  }, [items, filter]);
+  if (filter === "all") return items;
+  if (filter === "pending") return items.filter((it) => it.status === "pending" || it.status === "running");
+  return items.filter((it) => it.status === filter);
+}, [items, filter]);
 
   const filterButtonStyle = (active: boolean) =>
     ({
