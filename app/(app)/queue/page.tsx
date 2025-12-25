@@ -215,28 +215,6 @@ export default function QueuePage() {
         </button>
       </div>
 
-      {/* ✅ 追加：コピー通知（ふわっと出て消える） */}
-      {copied ? (
-        <div style={{ marginTop: 10 }}>
-          <div
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 8,
-              border: "1px solid #ddd",
-              background: "#fff",
-              borderRadius: 999,
-              padding: "6px 10px",
-              fontSize: 12,
-              opacity: 0.9,
-            }}
-          >
-            <span aria-hidden="true">📋</span>
-            <span>{copied}</span>
-          </div>
-        </div>
-      ) : null}
-
       {/* フィルタ */}
       <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
         <FilterButton active={filter === "all"} onClick={() => setFilter("all")} label={`All (${counts.all})`} />
@@ -340,6 +318,38 @@ export default function QueuePage() {
           </div>
         ) : null}
       </div>
+
+{/* ✅ 固定トースト（右下） */}
+{copied ? (
+  <div
+    style={{
+      position: "fixed",
+      right: 16,
+      bottom: 16,
+      zIndex: 1000,
+      border: "1px solid #ddd",
+      background: "#fff",
+      borderRadius: 14,
+      padding: "10px 12px",
+      boxShadow: "0 10px 30px rgba(0,0,0,0.10)",
+      fontSize: 13,
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 8,
+
+      // ふわっと
+      transform: "translateY(0)",
+      opacity: 1,
+      transition: "opacity 160ms ease, transform 160ms ease",
+    }}
+    role="status"
+    aria-live="polite"
+  >
+    <span aria-hidden="true">📋</span>
+    <span>{copied}</span>
+  </div>
+) : null}
+
     </main>
   );
 }
