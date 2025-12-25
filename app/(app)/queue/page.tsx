@@ -16,6 +16,12 @@ type Item = {
   updated_at: string | null;
 };
 
+function shortId(id: string, head = 8, tail = 4) {
+  if (!id) return "";
+  if (id.length <= head + tail + 3) return id;
+  return `${id.slice(0, head)}…${id.slice(-tail)}`;
+}
+
 function short(s?: string | null, n = 140) {
   if (!s) return "";
   return s.length > n ? s.slice(0, n) + "…" : s;
@@ -240,7 +246,21 @@ export default function QueuePage() {
                 {/* ✅ 日時＋薄いID */}
                 <div style={{ opacity: 0.7, fontSize: 12, textAlign: "right" }}>
                   <div>{new Date(it.run_at).toLocaleString()}</div>
-                  <div style={{ marginTop: 4, fontSize: 11, opacity: 0.5 }}>id: {it.id}</div>
+                  <div
+  title={it.id}
+  onClick={() => navigator.clipboard?.writeText(it.id)}
+  style={{
+    marginTop: 4,
+    fontSize: 11,
+    opacity: 0.5,
+    cursor: "pointer",
+    userSelect: "none",
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+  }}
+>
+  id: {shortId(it.id)}（クリックでコピー）
+</div>
+
                 </div>
               </div>
 
