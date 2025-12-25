@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { NextResponse } from "next/server";
 import { getCookie, setHttpOnlyCookie, clearCookie } from "../../../_lib/cookies";
 import { getSupabaseAdmin } from "../../../_lib/supabaseAdmin";
@@ -30,7 +31,6 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Missing env: X_CLIENT_ID / X_REDIRECT_URI" }, { status: 500 });
   }
 
-
   const form = new URLSearchParams();
   form.set("code", code);
   form.set("grant_type", "authorization_code");
@@ -61,7 +61,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "No access_token in response", details: tokenJson }, { status: 400 });
   }
 
-  // ✅ ここがBの肝：user_idを取る（users.read がスコープに必要）
+  // ✅ user_idを取る（users.read がスコープに必要）
   const meRes = await fetch("https://api.x.com/2/users/me", {
     headers: { Authorization: `Bearer ${accessToken}` },
     cache: "no-store",
@@ -90,7 +90,6 @@ export async function GET(req: Request) {
     );
   }
 
- // ✅ ★ここに追加（GETの中で作る）
   const supabaseAdmin = getSupabaseAdmin();
 
   const { error: upsertErr } = await supabaseAdmin.from("x_tokens").upsert({
@@ -103,6 +102,30 @@ export async function GET(req: Request) {
 
   if (upsertErr) {
     return NextResponse.json({ error: "Failed to upsert x_tokens", details: upsertErr }, { status: 500 });
+  }
+
+  // ✅ 追加：再連携成功時、auth_required を pending に戻して早めに再実行させる
+  try {
+    const runAtSoon = new Date(Date.now() + 30_000).toISOString();
+
+    const { error: bumpErr } = await supabaseAdmin
+      .from("scheduled_posts")
+      .update({
+        status: "pending",
+        run_at: runAtSoon,
+        attempts: 0,
+        last_error: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("user_id", userId)
+      .eq("status", "auth_required");
+
+    if (bumpErr) {
+      // ここはログイン自体は成功させたいので「失敗しても継続」
+      console.error("Failed to bump auth_required -> pending:", bumpErr);
+    }
+  } catch (e) {
+    console.error("Exception while bumping auth_required -> pending:", e);
   }
 
   // UI用：user_id を Cookieに入れる（これで予約APIが user_id を使える）
