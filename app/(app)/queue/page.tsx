@@ -39,7 +39,6 @@ function statusLabel(s: Status) {
 }
 
 function badgeStyle(s: Status): React.CSSProperties {
-  // ざっくり色分け（見やすさ優先）
   const base: React.CSSProperties = {
     fontSize: 12,
     fontWeight: 700,
@@ -70,18 +69,10 @@ function cardStyle(s: Status): React.CSSProperties {
     background: "#fff",
   };
 
-  if (s === "failed" || s === "auth_required") {
-    return { ...base, borderColor: "#ffb8b8" };
-  }
-  if (s === "pending") {
-    return { ...base, borderColor: "#ffd59a" };
-  }
-  if (s === "running") {
-    return { ...base, borderColor: "#c8dcff" };
-  }
-  if (s === "sent") {
-    return { ...base, borderColor: "#bfe8c7" };
-  }
+  if (s === "failed" || s === "auth_required") return { ...base, borderColor: "#ffb8b8" };
+  if (s === "pending") return { ...base, borderColor: "#ffd59a" };
+  if (s === "running") return { ...base, borderColor: "#c8dcff" };
+  if (s === "sent") return { ...base, borderColor: "#bfe8c7" };
   return base;
 }
 
@@ -105,10 +96,8 @@ export default function QueuePage() {
         throw new Error(json?.error ?? `HTTP ${res.status}`);
       }
 
-      // 表示が自然になるように run_at 降順（最新が上）
       const next = (json.items ?? []) as Item[];
       next.sort((a, b) => (a.run_at < b.run_at ? 1 : -1));
-
       setItems(next);
     } catch (e: any) {
       setError(String(e?.message ?? e));
@@ -156,75 +145,70 @@ export default function QueuePage() {
           <p style={{ opacity: 0.7 }}>予約の状態（pending/running/sent/failed/auth_required）を確認できます。</p>
         </div>
 
+        {/* ✅ 更新ボタン（アイコン） */}
         <button
-  onClick={load}
-  disabled={loading}
-  title={loading ? "更新中…" : "更新"}
-  aria-label={loading ? "更新中" : "更新"}
-  style={{
-    border: "1px solid #ddd",
-    background: "#fff",
-    borderRadius: 999,
-    padding: "8px 10px",
-    cursor: loading ? "not-allowed" : "pointer",
-    opacity: loading ? 0.6 : 1,
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    lineHeight: 0,
-  }}
->
-  {/* refresh icon */}
-  <svg
-    width="18"
-    height="18"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    aria-hidden="true"
-    style={{
-      // loading中だけ軽く回す（任意：嫌ならこのstyleごと削除OK）
-      animation: loading ? "spin 1s linear infinite" : undefined,
-    }}
-  >
-    <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-    <polyline points="21 3 21 9 15 9" />
-  </svg>
+          onClick={load}
+          disabled={loading}
+          title={loading ? "更新中…" : "更新"}
+          aria-label={loading ? "更新中" : "更新"}
+          style={{
+            border: "1px solid #ddd",
+            background: "#fff",
+            borderRadius: 999,
+            padding: "8px 10px",
+            cursor: loading ? "not-allowed" : "pointer",
+            opacity: loading ? 0.6 : 1,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            lineHeight: 0,
+          }}
+        >
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+            style={{ animation: loading ? "spin 1s linear infinite" : undefined }}
+          >
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <polyline points="21 3 21 9 15 9" />
+          </svg>
 
-  {/* CSS keyframes（inline styleのみで完結させるための埋め込み） */}
-  <style jsx>{`
-    @keyframes spin {
-      from { transform: rotate(0deg); }
-      to { transform: rotate(360deg); }
-    }
-  `}</style>
-</button>
-
+          <style jsx>{`
+            @keyframes spin {
+              from { transform: rotate(0deg); }
+              to { transform: rotate(360deg); }
+            }
+          `}</style>
+        </button>
       </div>
 
       {/* フィルタ */}
       <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
         <FilterButton active={filter === "all"} onClick={() => setFilter("all")} label={`All (${counts.all})`} />
-        <FilterButton
-          active={filter === "pending"}
-          onClick={() => setFilter("pending")}
-          label={`Pending (${counts.pending})`}
-        />
-        <FilterButton
-          active={filter === "failed"}
-          onClick={() => setFilter("failed")}
-          label={`Failed (${counts.failed})`}
-        />
+        <FilterButton active={filter === "pending"} onClick={() => setFilter("pending")} label={`Pending (${counts.pending})`} />
+        <FilterButton active={filter === "failed"} onClick={() => setFilter("failed")} label={`Failed (${counts.failed})`} />
         <FilterButton active={filter === "auth"} onClick={() => setFilter("auth")} label={`Auth (${counts.auth})`} />
       </div>
 
       {loading ? <div style={{ marginTop: 16, opacity: 0.7 }}>Loading…</div> : null}
 
       {error ? (
-        <div style={{ marginTop: 16, padding: 12, border: "1px solid #ffb8b8", borderRadius: 12, background: "#fff0f0" }}>
+        <div
+          style={{
+            marginTop: 16,
+            padding: 12,
+            border: "1px solid #ffb8b8",
+            borderRadius: 12,
+            background: "#fff0f0",
+          }}
+        >
           <div style={{ fontWeight: 700 }}>Error</div>
           <div style={{ whiteSpace: "pre-wrap" }}>{error}</div>
           <div style={{ marginTop: 8, opacity: 0.7 }}>
@@ -237,11 +221,8 @@ export default function QueuePage() {
         {filteredItems.map((it) => {
           const isAuthRequired = it.status === "auth_required";
 
-          // ✅ AUTH REQUIRED は「投稿を開く」を絶対出さない
-          const tweetUrl =
-            !isAuthRequired && it.tweet_id ? `https://x.com/i/web/status/${it.tweet_id}` : null;
+          const tweetUrl = !isAuthRequired && it.tweet_id ? `https://x.com/i/web/status/${it.tweet_id}` : null;
 
-          // ✅ auth_required のときだけ last_error を短く（80）
           const errText =
             it.status === "failed"
               ? short(it.last_error, 140)
@@ -255,11 +236,12 @@ export default function QueuePage() {
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span style={badgeStyle(it.status)}>{statusLabel(it.status)}</span>
                 </div>
-                <div style={{ opacity: 0.7, fontSize: 12, textAlign: "right" }}>
-  <div>{new Date(it.run_at).toLocaleString()}</div>
-  <div style={{ marginTop: 4, fontSize: 11, opacity: 0.5 }}>id: {it.id}</div>
-</div>
 
+                {/* ✅ 日時＋薄いID */}
+                <div style={{ opacity: 0.7, fontSize: 12, textAlign: "right" }}>
+                  <div>{new Date(it.run_at).toLocaleString()}</div>
+                  <div style={{ marginTop: 4, fontSize: 11, opacity: 0.5 }}>id: {it.id}</div>
+                </div>
               </div>
 
               <div style={{ marginTop: 10, whiteSpace: "pre-wrap" }}>{it.text}</div>
@@ -287,7 +269,6 @@ export default function QueuePage() {
                   </a>
                 ) : null}
 
-                {/* AUTH REQUIRED の導線 */}
                 {isAuthRequired ? <a href="/accounts">Xを再連携する</a> : null}
               </div>
             </div>
