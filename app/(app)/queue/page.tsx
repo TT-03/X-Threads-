@@ -157,20 +157,52 @@ export default function QueuePage() {
         </div>
 
         <button
-          onClick={load}
-          disabled={loading}
-          style={{
-            border: "1px solid #ddd",
-            background: "#fff",
-            borderRadius: 10,
-            padding: "8px 12px",
-            cursor: loading ? "not-allowed" : "pointer",
-            opacity: loading ? 0.6 : 1,
-            fontWeight: 700,
-          }}
-        >
-          {loading ? "更新中…" : "更新"}
-        </button>
+  onClick={load}
+  disabled={loading}
+  title={loading ? "更新中…" : "更新"}
+  aria-label={loading ? "更新中" : "更新"}
+  style={{
+    border: "1px solid #ddd",
+    background: "#fff",
+    borderRadius: 999,
+    padding: "8px 10px",
+    cursor: loading ? "not-allowed" : "pointer",
+    opacity: loading ? 0.6 : 1,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    lineHeight: 0,
+  }}
+>
+  {/* refresh icon */}
+  <svg
+    width="18"
+    height="18"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+    style={{
+      // loading中だけ軽く回す（任意：嫌ならこのstyleごと削除OK）
+      animation: loading ? "spin 1s linear infinite" : undefined,
+    }}
+  >
+    <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+    <polyline points="21 3 21 9 15 9" />
+  </svg>
+
+  {/* CSS keyframes（inline styleのみで完結させるための埋め込み） */}
+  <style jsx>{`
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+  `}</style>
+</button>
+
       </div>
 
       {/* フィルタ */}
@@ -223,7 +255,11 @@ export default function QueuePage() {
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span style={badgeStyle(it.status)}>{statusLabel(it.status)}</span>
                 </div>
-                <div style={{ opacity: 0.7, fontSize: 12 }}>{new Date(it.run_at).toLocaleString()}</div>
+                <div style={{ opacity: 0.7, fontSize: 12, textAlign: "right" }}>
+  <div>{new Date(it.run_at).toLocaleString()}</div>
+  <div style={{ marginTop: 4, fontSize: 11, opacity: 0.5 }}>id: {it.id}</div>
+</div>
+
               </div>
 
               <div style={{ marginTop: 10, whiteSpace: "pre-wrap" }}>{it.text}</div>
