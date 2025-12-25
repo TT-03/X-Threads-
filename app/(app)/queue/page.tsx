@@ -16,15 +16,15 @@ type Item = {
   updated_at: string | null;
 };
 
+function short(s?: string | null, n = 140) {
+  if (!s) return "";
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
 function shortId(id: string, head = 8, tail = 4) {
   if (!id) return "";
   if (id.length <= head + tail + 3) return id;
   return `${id.slice(0, head)}…${id.slice(-tail)}`;
-}
-
-function short(s?: string | null, n = 140) {
-  if (!s) return "";
-  return s.length > n ? s.slice(0, n) + "…" : s;
 }
 
 function statusLabel(s: Status) {
@@ -90,6 +90,9 @@ export default function QueuePage() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<FilterKey>("all");
 
+  // ✅ 追加：コピー通知
+  const [copied, setCopied] = useState<string | null>(null);
+
   async function load() {
     setLoading(true);
     setError(null);
@@ -98,9 +101,7 @@ export default function QueuePage() {
       const res = await fetch("/api/queue", { cache: "no-store" });
       const json = await res.json().catch(() => ({}));
 
-      if (!res.ok) {
-        throw new Error(json?.error ?? `HTTP ${res.status}`);
-      }
+      if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
 
       const next = (json.items ?? []) as Item[];
       next.sort((a, b) => (a.run_at < b.run_at ? 1 : -1));
@@ -110,6 +111,31 @@ export default function QueuePage() {
       setItems([]);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function copyId(id: string) {
+    try {
+      await navigator.clipboard.writeText(id);
+      setCopied("クリップボードにコピーしました");
+    } catch {
+      // clipboardが使えない環境向けのフォールバック
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = id;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        setCopied("クリップボードにコピーしました");
+      } catch {
+        setCopied("コピーに失敗しました（ブラウザ設定をご確認ください）");
+      }
+    } finally {
+      window.clearTimeout((copyId as any)._t);
+      (copyId as any)._t = window.setTimeout(() => setCopied(null), 3000);
     }
   }
 
@@ -151,49 +177,65 @@ export default function QueuePage() {
           <p style={{ opacity: 0.7 }}>予約の状態（pending/running/sent/failed/auth_required）を確認できます。</p>
         </div>
 
-        {/* ✅ 更新ボタン（アイコン） */}
         <button
           onClick={load}
           disabled={loading}
-          title={loading ? "更新中…" : "更新"}
-          aria-label={loading ? "更新中" : "更新"}
+          aria-label="refresh"
+          title="更新"
           style={{
             border: "1px solid #ddd",
             background: "#fff",
             borderRadius: 999,
-            padding: "8px 10px",
-            cursor: loading ? "not-allowed" : "pointer",
-            opacity: loading ? 0.6 : 1,
+            width: 36,
+            height: 36,
             display: "inline-flex",
             alignItems: "center",
             justifyContent: "center",
-            lineHeight: 0,
+            cursor: loading ? "not-allowed" : "pointer",
+            opacity: loading ? 0.6 : 1,
+            fontWeight: 700,
           }}
         >
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-            style={{ animation: loading ? "spin 1s linear infinite" : undefined }}
-          >
-            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-            <polyline points="21 3 21 9 15 9" />
+          {/* refresh icon */}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path
+              d="M20 12a8 8 0 1 1-2.34-5.66"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+            />
+            <path
+              d="M20 4v6h-6"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
           </svg>
-
-          <style jsx>{`
-            @keyframes spin {
-              from { transform: rotate(0deg); }
-              to { transform: rotate(360deg); }
-            }
-          `}</style>
         </button>
       </div>
+
+      {/* ✅ 追加：コピー通知（ふわっと出て消える） */}
+      {copied ? (
+        <div style={{ marginTop: 10 }}>
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              border: "1px solid #ddd",
+              background: "#fff",
+              borderRadius: 999,
+              padding: "6px 10px",
+              fontSize: 12,
+              opacity: 0.9,
+            }}
+          >
+            <span aria-hidden="true">📋</span>
+            <span>{copied}</span>
+          </div>
+        </div>
+      ) : null}
 
       {/* フィルタ */}
       <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
@@ -206,20 +248,10 @@ export default function QueuePage() {
       {loading ? <div style={{ marginTop: 16, opacity: 0.7 }}>Loading…</div> : null}
 
       {error ? (
-        <div
-          style={{
-            marginTop: 16,
-            padding: 12,
-            border: "1px solid #ffb8b8",
-            borderRadius: 12,
-            background: "#fff0f0",
-          }}
-        >
+        <div style={{ marginTop: 16, padding: 12, border: "1px solid #ffb8b8", borderRadius: 12, background: "#fff0f0" }}>
           <div style={{ fontWeight: 700 }}>Error</div>
           <div style={{ whiteSpace: "pre-wrap" }}>{error}</div>
-          <div style={{ marginTop: 8, opacity: 0.7 }}>
-            ※ 未連携（x_user_id cookie無し / x_tokens無し）の場合は 401 になります
-          </div>
+          <div style={{ marginTop: 8, opacity: 0.7 }}>※ 未連携（x_user_id cookie無し / x_tokens無し）の場合は 401 になります</div>
         </div>
       ) : null}
 
@@ -243,24 +275,25 @@ export default function QueuePage() {
                   <span style={badgeStyle(it.status)}>{statusLabel(it.status)}</span>
                 </div>
 
-                {/* ✅ 日時＋薄いID */}
                 <div style={{ opacity: 0.7, fontSize: 12, textAlign: "right" }}>
                   <div>{new Date(it.run_at).toLocaleString()}</div>
-                  <div
-  title={it.id}
-  onClick={() => navigator.clipboard?.writeText(it.id)}
-  style={{
-    marginTop: 4,
-    fontSize: 11,
-    opacity: 0.5,
-    cursor: "pointer",
-    userSelect: "none",
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-  }}
->
-  id: {shortId(it.id)}（クリックでコピー）
-</div>
 
+                  {/* ✅ id を薄く＆短く。クリックでコピー */}
+                  <div
+                    title={it.id}
+                    onClick={() => copyId(it.id)}
+                    style={{
+                      marginTop: 4,
+                      fontSize: 11,
+                      opacity: 0.5,
+                      cursor: "pointer",
+                      userSelect: "none",
+                      fontFamily:
+                        "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+                    }}
+                  >
+                    id: {shortId(it.id)}（クリックでコピー）
+                  </div>
                 </div>
               </div>
 
@@ -311,15 +344,7 @@ export default function QueuePage() {
   );
 }
 
-function FilterButton({
-  active,
-  onClick,
-  label,
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-}) {
+function FilterButton({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
   return (
     <button
       onClick={onClick}
