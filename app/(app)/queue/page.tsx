@@ -68,7 +68,23 @@ export default function QueuePage() {
 
   return (
     <main style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
-      <h1 style={{ fontSize: 24, fontWeight: 700 }}>Queue</h1>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+  <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>Queue</h1>
+
+  <button
+    onClick={() => location.reload()}
+    style={{
+      padding: "6px 10px",
+      border: "1px solid #ddd",
+      borderRadius: 10,
+      background: "white",
+      cursor: "pointer",
+    }}
+  >
+    更新
+  </button>
+</div>
+
       <p style={{ opacity: 0.7 }}>予約の状態（pending/running/sent/failed）を確認できます。</p>
 
       {loading ? <div style={{ marginTop: 16, opacity: 0.7 }}>Loading…</div> : null}
