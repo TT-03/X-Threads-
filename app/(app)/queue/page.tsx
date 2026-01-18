@@ -250,6 +250,7 @@ export default function QueuePage() {
     }
   }
 
+  // 初回ロード + secret復元
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -266,25 +267,27 @@ export default function QueuePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ 追加：自動更新（1分）
-useEffect(() => {
-  if (!adminMode) return;
-  if (!autoRun) return;
-  if (!cronSecretCached) return;
-
-  const id = setInterval(() => {
-    runNow(); // ✅ 1分ごとに実行 → runNow内でloadも走る
-  }, 60_000);
-
-  return () => clearInterval(id);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [adminMode, autoRun, cronSecretCached]);
-
+  // 自動更新（1分ごとに一覧をリロード）
+  useEffect(() => {
     if (!autoRefresh) return;
     const id = setInterval(() => load(), 60_000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRefresh]);
+
+  // ✅ 自動実行（管理者モードON & secret保存済み & autoRun ON のときだけ）
+  useEffect(() => {
+    if (!adminMode) return;
+    if (!autoRun) return;
+    if (!cronSecretCached) return;
+
+    const id = setInterval(() => {
+      runNow();
+    }, 60_000);
+
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adminMode, autoRun, cronSecretCached]);
 
   const counts = useMemo(() => {
     const c = { all: groups.length, pending: 0, needs: 0, failed: 0, auth: 0 };
