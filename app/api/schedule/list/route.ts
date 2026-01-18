@@ -34,7 +34,7 @@ export async function GET() {
 
     const supabaseAdmin = getSupabaseAdmin();
 
-    // group_id, draft_id ‚à•Ô‚·iDB‚Å’Ç‰ÁÏ‚İ‚Ì‘O’ñj
+    // group_id, draft_id ã‚‚è¿”ã™ï¼ˆDBã§è¿½åŠ æ¸ˆã¿ã®å‰æï¼‰
     const { data, error } = await supabaseAdmin
       .from("scheduled_posts")
       .select(
@@ -53,7 +53,7 @@ export async function GET() {
 
     const rows = (data ?? []) as Row[];
 
-    // group_id ‚ª–³‚¢ŒÃ‚¢ƒf[ƒ^‚à¬‚´‚é‚Ì‚ÅA–³‚¢ê‡‚Í id ‚ğ groupKey ‚É‚·‚é
+    // group_id ãŒç„¡ã„å¤ã„ãƒ‡ãƒ¼ã‚¿ã‚‚æ··ã–ã‚‹ã®ã§ã€ç„¡ã„å ´åˆã¯ id ã‚’ groupKey ã«ã™ã‚‹
     const groupsMap = new Map<string, Row[]>();
     for (const r of rows) {
       const key = r.group_id ? String(r.group_id) : `single:${r.id}`;
@@ -61,9 +61,9 @@ export async function GET() {
       groupsMap.get(key)!.push(r);
     }
 
-    // group’PˆÊ‚É®Œ`
+    // groupå˜ä½ã«æ•´å½¢
     const groups = Array.from(groupsMap.entries()).map(([groupKey, items]) => {
-      // run_at ‚ÍŠî–{“¯‚¶‚Í‚¸‚¾‚ªA”O‚Ì‚½‚ßÅ¬i‘‚¢j‚ğÌ—p
+      // run_at ã¯åŸºæœ¬åŒã˜ã¯ãšã ãŒã€å¿µã®ãŸã‚æœ€å°ï¼ˆæ—©ã„ï¼‰ã‚’æ¡ç”¨
       const runAt = items
         .map((x) => new Date(x.run_at).getTime())
         .filter((t) => !Number.isNaN(t))
@@ -76,14 +76,14 @@ export async function GET() {
 
       const destinations = items.map((x) => normalizeProvider(x.provider));
 
-      // u—v‘Î‰v”»’èiThreads‚ª needs_user_action ‚È‚ç truej
+      // ã€Œè¦å¯¾å¿œã€åˆ¤å®šï¼ˆThreadsãŒ needs_user_action ãªã‚‰ trueï¼‰
       const needs_user_action = Boolean(thItem && thItem.status === "needs_user_action");
 
-      // ‘ã•\ƒeƒLƒXƒgi•\¦—pjFX‚ª‚ ‚ê‚ÎXA–³‚¯‚ê‚Îæ“ª
+      // ä»£è¡¨ãƒ†ã‚­ã‚¹ãƒˆï¼ˆè¡¨ç¤ºç”¨ï¼‰ï¼šXãŒã‚ã‚Œã°Xã€ç„¡ã‘ã‚Œã°å…ˆé ­
       const display_text = (xItem?.text ?? items[0]?.text ?? "").toString();
 
-      // ƒOƒ‹[ƒv‘S‘Ì‚Ìó‘ÔiG‚É‚Ü‚Æ‚ß‚éj
-      // —Dæ‡ˆÊ: needs_user_action > failed > auth_required > running > pending > sent
+      // ã‚°ãƒ«ãƒ¼ãƒ—å…¨ä½“ã®çŠ¶æ…‹ï¼ˆé›‘ã«ã¾ã¨ã‚ã‚‹ï¼‰
+      // å„ªå…ˆé †ä½: needs_user_action > failed > auth_required > running > pending > sent
       const statuses = new Set(items.map((x) => x.status));
       let group_status = "sent";
       if (statuses.has("needs_user_action")) group_status = "needs_user_action";
@@ -94,22 +94,22 @@ export async function GET() {
 
       return {
         group_id: items[0]?.group_id ?? null,
-        group_key: groupKey, // group_id‚ª–³‚¢ŒÃ‚¢ƒf[ƒ^—p
+        group_key: groupKey, // group_idãŒç„¡ã„å¤ã„ãƒ‡ãƒ¼ã‚¿ç”¨
         run_at,
         group_status,
         needs_user_action,
         destinations,
         display_text,
 
-        // provider•Ê‚ÌÚ×iUI‚Å•K—v‚È‚çg‚¦‚éj
+        // provideråˆ¥ã®è©³ç´°ï¼ˆUIã§å¿…è¦ãªã‚‰ä½¿ãˆã‚‹ï¼‰
         x: xItem,
         threads: thItem,
 
-        items, // ¶s‚àc‚·iƒfƒoƒbƒO—pj
+        items, // ç”Ÿè¡Œã‚‚æ®‹ã™ï¼ˆãƒ‡ãƒãƒƒã‚°ç”¨ï¼‰
       };
     });
 
-    // run_at desc ‚Å•À‚Ñ‘Ö‚¦iV‚µ‚¢—\–ñ‚ªãj
+    // run_at desc ã§ä¸¦ã³æ›¿ãˆï¼ˆæ–°ã—ã„äºˆç´„ãŒä¸Šï¼‰
     groups.sort((a, b) => {
       const ta = a.run_at ? new Date(a.run_at).getTime() : 0;
       const tb = b.run_at ? new Date(b.run_at).getTime() : 0;
