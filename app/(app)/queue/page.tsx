@@ -2,18 +2,40 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-type Status = "pending" | "running" | "sent" | "failed" | "auth_required";
+type GroupStatus =
+  | "pending"
+  | "running"
+  | "sent"
+  | "failed"
+  | "auth_required"
+  | "needs_user_action";
 
-type Item = {
+type Row = {
   id: string;
-  provider: string;
+  provider: string; // "x" | "threads"
   text: string;
   run_at: string;
-  status: Status;
+  status: string;
   attempts: number | null;
   last_error: string | null;
   tweet_id: string | null;
   updated_at: string | null;
+  group_id?: string | null;
+  draft_id?: string | null;
+};
+
+type Group = {
+  group_id: string | null;
+  group_key: string; // group_idが無い古いデータ用のキー
+  run_at: string | null;
+  group_status: GroupStatus;
+  needs_user_action: boolean;
+  destinations: string[]; // ["x","threads"]
+  display_text: string;
+
+  x: Row | null;
+  threads: Row | null;
+  items: Row[];
 };
 
 function short(s?: string | null, n = 140) {
@@ -27,8 +49,10 @@ function shortId(id: string, head = 8, tail = 4) {
   return `${id.slice(0, head)}…${id.slice(-tail)}`;
 }
 
-function statusLabel(s: Status) {
+function statusLabel(s: GroupStatus) {
   switch (s) {
+    case "needs_user_action":
+      return "NEEDS ACTION";
     case "pending":
       return "PENDING";
     case "running":
@@ -44,7 +68,7 @@ function statusLabel(s: Status) {
   }
 }
 
-function badgeStyle(s: Status): React.CSSProperties {
+function badgeStyle(s: GroupStatus): React.CSSProperties {
   const base: React.CSSProperties = {
     fontSize: 12,
     fontWeight: 700,
@@ -61,13 +85,14 @@ function badgeStyle(s: Status): React.CSSProperties {
   if (s === "sent") return { ...base, background: "#eefbf0", borderColor: "#bfe8c7", color: "#126b2e" };
   if (s === "pending") return { ...base, background: "#fff7e6", borderColor: "#ffd59a", color: "#7a4b00" };
   if (s === "running") return { ...base, background: "#eef5ff", borderColor: "#c8dcff", color: "#1f4b99" };
-  if (s === "failed") return { ...base, background: "#fff0f0", borderColor: "#ffb8b8", color: "#9b1c1c" };
-  if (s === "auth_required") return { ...base, background: "#fff0f0", borderColor: "#ffb8b8", color: "#9b1c1c" };
+  if (s === "needs_user_action") return { ...base, background: "#eef5ff", borderColor: "#c8dcff", color: "#1f4b99" };
+  if (s === "failed" || s === "auth_required")
+    return { ...base, background: "#fff0f0", borderColor: "#ffb8b8", color: "#9b1c1c" };
 
   return base;
 }
 
-function cardStyle(s: Status): React.CSSProperties {
+function cardStyle(s: GroupStatus): React.CSSProperties {
   const base: React.CSSProperties = {
     border: "1px solid #ddd",
     borderRadius: 12,
@@ -78,19 +103,20 @@ function cardStyle(s: Status): React.CSSProperties {
   if (s === "failed" || s === "auth_required") return { ...base, borderColor: "#ffb8b8" };
   if (s === "pending") return { ...base, borderColor: "#ffd59a" };
   if (s === "running") return { ...base, borderColor: "#c8dcff" };
+  if (s === "needs_user_action") return { ...base, borderColor: "#c8dcff" };
   if (s === "sent") return { ...base, borderColor: "#bfe8c7" };
   return base;
 }
 
-type FilterKey = "all" | "pending" | "failed" | "auth";
+type FilterKey = "all" | "pending" | "needs" | "failed" | "auth";
 
 export default function QueuePage() {
-  const [items, setItems] = useState<Item[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<FilterKey>("all");
 
-  // ✅ 追加：コピー通知
+  // ✅ コピー通知
   const [copied, setCopied] = useState<string | null>(null);
 
   async function load() {
@@ -98,44 +124,88 @@ export default function QueuePage() {
     setError(null);
 
     try {
-      const res = await fetch("/api/queue", { cache: "no-store" });
+      // ✅ group形式の一覧を取得
+      const res = await fetch("/api/schedule/list", { cache: "no-store" });
       const json = await res.json().catch(() => ({}));
 
       if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
 
-      const next = (json.items ?? []) as Item[];
-      next.sort((a, b) => (a.run_at < b.run_at ? 1 : -1));
-      setItems(next);
+      const next = (json.groups ?? []) as Group[];
+      setGroups(next);
     } catch (e: any) {
       setError(String(e?.message ?? e));
-      setItems([]);
+      setGroups([]);
     } finally {
       setLoading(false);
     }
   }
 
-  async function copyId(id: string) {
+  async function copyText(text: string) {
     try {
-      await navigator.clipboard.writeText(id);
-      setCopied("クリップボードにコピーしました");
+      await navigator.clipboard.writeText(text);
+      setCopied("本文をコピーしました");
     } catch {
-      // clipboardが使えない環境向けのフォールバック
       try {
         const ta = document.createElement("textarea");
-        ta.value = id;
+        ta.value = text;
         ta.style.position = "fixed";
         ta.style.left = "-9999px";
         document.body.appendChild(ta);
         ta.select();
         document.execCommand("copy");
         document.body.removeChild(ta);
-        setCopied("クリップボードにコピーしました");
+        setCopied("本文をコピーしました");
       } catch {
         setCopied("コピーに失敗しました（ブラウザ設定をご確認ください）");
       }
     } finally {
-      window.clearTimeout((copyId as any)._t);
-      (copyId as any)._t = window.setTimeout(() => setCopied(null), 3000);
+      window.clearTimeout((copyText as any)._t);
+      (copyText as any)._t = window.setTimeout(() => setCopied(null), 3000);
+    }
+  }
+
+  function openThreads() {
+    // MVP：とりあえずThreadsのWebを開く（本文はコピーして貼り付け）
+    window.open("https://www.threads.net/", "_blank", "noreferrer");
+  }
+
+  async function cancelGroup(g: Group) {
+    try {
+      const payload = g.group_id
+        ? { group_id: g.group_id }
+        : { id: g.items?.[0]?.id }; // 古いデータ用
+
+      const res = await fetch("/api/schedule/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
+      await load();
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    }
+  }
+
+  async function completeThreads(g: Group) {
+    try {
+      const payload = g.group_id
+        ? { group_id: g.group_id, provider: "threads" }
+        : g.threads?.id
+        ? { id: g.threads.id }
+        : { id: g.items?.[0]?.id };
+
+      const res = await fetch("/api/schedule/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
+      await load();
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
     }
   }
 
@@ -152,29 +222,33 @@ export default function QueuePage() {
   }, []);
 
   const counts = useMemo(() => {
-    const c = { all: items.length, pending: 0, failed: 0, auth: 0 };
-    for (const it of items) {
-      if (it.status === "pending") c.pending++;
-      if (it.status === "failed") c.failed++;
-      if (it.status === "auth_required") c.auth++;
+    const c = { all: groups.length, pending: 0, needs: 0, failed: 0, auth: 0 };
+    for (const g of groups) {
+      if (g.group_status === "pending") c.pending++;
+      if (g.group_status === "needs_user_action") c.needs++;
+      if (g.group_status === "failed") c.failed++;
+      if (g.group_status === "auth_required") c.auth++;
     }
     return c;
-  }, [items]);
+  }, [groups]);
 
-  const filteredItems = useMemo(() => {
-    if (filter === "all") return items;
-    if (filter === "pending") return items.filter((x) => x.status === "pending");
-    if (filter === "failed") return items.filter((x) => x.status === "failed");
-    if (filter === "auth") return items.filter((x) => x.status === "auth_required");
-    return items;
-  }, [items, filter]);
+  const filtered = useMemo(() => {
+    if (filter === "all") return groups;
+    if (filter === "pending") return groups.filter((g) => g.group_status === "pending");
+    if (filter === "needs") return groups.filter((g) => g.group_status === "needs_user_action");
+    if (filter === "failed") return groups.filter((g) => g.group_status === "failed");
+    if (filter === "auth") return groups.filter((g) => g.group_status === "auth_required");
+    return groups;
+  }, [groups, filter]);
 
   return (
     <main style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
         <div>
           <h1 style={{ fontSize: 24, fontWeight: 700 }}>Queue</h1>
-          <p style={{ opacity: 0.7 }}>予約の状態（pending/running/sent/failed/auth_required）を確認できます。</p>
+          <p style={{ opacity: 0.7 }}>
+            予約の状態を確認できます（Threadsは必要に応じて「要対応」になります）。
+          </p>
         </div>
 
         <button
@@ -196,14 +270,8 @@ export default function QueuePage() {
             fontWeight: 700,
           }}
         >
-          {/* refresh icon */}
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path
-              d="M20 12a8 8 0 1 1-2.34-5.66"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-            />
+            <path d="M20 12a8 8 0 1 1-2.34-5.66" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
             <path
               d="M20 4v6h-6"
               stroke="currentColor"
@@ -218,8 +286,21 @@ export default function QueuePage() {
       {/* フィルタ */}
       <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
         <FilterButton active={filter === "all"} onClick={() => setFilter("all")} label={`All (${counts.all})`} />
-        <FilterButton active={filter === "pending"} onClick={() => setFilter("pending")} label={`Pending (${counts.pending})`} />
-        <FilterButton active={filter === "failed"} onClick={() => setFilter("failed")} label={`Failed (${counts.failed})`} />
+        <FilterButton
+          active={filter === "needs"}
+          onClick={() => setFilter("needs")}
+          label={`Needs Action (${counts.needs})`}
+        />
+        <FilterButton
+          active={filter === "pending"}
+          onClick={() => setFilter("pending")}
+          label={`Pending (${counts.pending})`}
+        />
+        <FilterButton
+          active={filter === "failed"}
+          onClick={() => setFilter("failed")}
+          label={`Failed (${counts.failed})`}
+        />
         <FilterButton active={filter === "auth"} onClick={() => setFilter("auth")} label={`Auth (${counts.auth})`} />
       </div>
 
@@ -229,37 +310,48 @@ export default function QueuePage() {
         <div style={{ marginTop: 16, padding: 12, border: "1px solid #ffb8b8", borderRadius: 12, background: "#fff0f0" }}>
           <div style={{ fontWeight: 700 }}>Error</div>
           <div style={{ whiteSpace: "pre-wrap" }}>{error}</div>
-          <div style={{ marginTop: 8, opacity: 0.7 }}>※ 未連携（x_user_id cookie無し / x_tokens無し）の場合は 401 になります</div>
+          <div style={{ marginTop: 8, opacity: 0.7 }}>※ 未連携（x_user_id cookie無し）の場合は 401 になります</div>
         </div>
       ) : null}
 
       <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
-        {filteredItems.map((it) => {
-          const isAuthRequired = it.status === "auth_required";
+        {filtered.map((g) => {
+          const isAuthRequired = g.group_status === "auth_required";
+          const isNeeds = g.group_status === "needs_user_action";
 
-          const tweetUrl = !isAuthRequired && it.tweet_id ? `https://x.com/i/web/status/${it.tweet_id}` : null;
+          const xTweetUrl =
+            g.x?.tweet_id && !isAuthRequired ? `https://x.com/i/web/status/${g.x.tweet_id}` : null;
+
+          // 表示用ID（group_idが無い古いデータにも対応）
+          const idForDisplay = g.group_id ? `group:${g.group_id}` : `key:${g.group_key}`;
 
           const errText =
-            it.status === "failed"
-              ? short(it.last_error, 140)
-              : it.status === "auth_required"
-              ? short(it.last_error, 80)
+            g.group_status === "failed"
+              ? short(g.items?.[0]?.last_error ?? "", 140)
+              : g.group_status === "auth_required"
+              ? short(g.items?.[0]?.last_error ?? "", 80)
               : "";
 
           return (
-            <div key={it.id} style={cardStyle(it.status)}>
+            <div key={g.group_key} style={cardStyle(g.group_status)}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={badgeStyle(it.status)}>{statusLabel(it.status)}</span>
+                  <span style={badgeStyle(g.group_status)}>
+                    {isNeeds ? "🔔" : null}
+                    {statusLabel(g.group_status)}
+                  </span>
+
+                  <span style={{ fontSize: 12, opacity: 0.7 }}>
+                    to: {g.destinations.join(" + ")}
+                  </span>
                 </div>
 
                 <div style={{ opacity: 0.7, fontSize: 12, textAlign: "right" }}>
-                  <div>{new Date(it.run_at).toLocaleString()}</div>
+                  <div>{g.run_at ? new Date(g.run_at).toLocaleString() : "-"}</div>
 
-                  {/* ✅ id を薄く＆短く。クリックでコピー */}
                   <div
-                    title={it.id}
-                    onClick={() => copyId(it.id)}
+                    title={idForDisplay}
+                    onClick={() => copyText(idForDisplay)}
                     style={{
                       marginTop: 4,
                       fontSize: 11,
@@ -270,46 +362,72 @@ export default function QueuePage() {
                         "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
                     }}
                   >
-                    id: {shortId(it.id)}（クリックでコピー）
+                    {g.group_id ? `group_id: ${shortId(g.group_id)}` : `key: ${shortId(g.group_key)}`}（クリックでコピー）
                   </div>
                 </div>
               </div>
 
-              <div style={{ marginTop: 10, whiteSpace: "pre-wrap" }}>{it.text}</div>
+              <div style={{ marginTop: 10, whiteSpace: "pre-wrap" }}>{g.display_text}</div>
 
               <div
                 style={{
                   marginTop: 10,
                   display: "flex",
-                  gap: 12,
+                  gap: 10,
                   flexWrap: "wrap",
                   fontSize: 12,
-                  opacity: 0.9,
+                  opacity: 0.95,
                   alignItems: "center",
                 }}
               >
-                <span>attempts: {it.attempts ?? 0}</span>
-
-                {(it.status === "failed" || it.status === "auth_required") && it.last_error ? (
-                  <span>error: {errText}</span>
-                ) : null}
-
-                {tweetUrl ? (
-                  <a href={tweetUrl} target="_blank" rel="noreferrer">
-                    投稿を開く
+                {/* X */}
+                {xTweetUrl ? (
+                  <a href={xTweetUrl} target="_blank" rel="noreferrer">
+                    Xの投稿を開く
                   </a>
                 ) : null}
 
                 {isAuthRequired ? <a href="/accounts">Xを再連携する</a> : null}
+
+                {(g.group_status === "failed" || g.group_status === "auth_required") && errText ? (
+                  <span>error: {errText}</span>
+                ) : null}
+
+                {/* Threads 要対応のときに出すボタン */}
+                {isNeeds ? (
+                  <>
+                    <button
+                      onClick={() => copyText(g.threads?.text ?? g.display_text)}
+                      style={btnStyle()}
+                    >
+                      本文コピー
+                    </button>
+                    <button onClick={openThreads} style={btnStyle()}>
+                      Threadsを開く
+                    </button>
+                    <button onClick={() => completeThreads(g)} style={btnStyle(true)}>
+                      完了にする
+                    </button>
+                  </>
+                ) : null}
+
+                {/* キャンセル（グループ単位） */}
+                {(g.group_status === "pending" || g.group_status === "running" || g.group_status === "needs_user_action") ? (
+                  <button onClick={() => cancelGroup(g)} style={btnStyle(false, true)}>
+                    キャンセル
+                  </button>
+                ) : null}
               </div>
             </div>
           );
         })}
 
-        {!loading && !error && filteredItems.length === 0 ? (
+        {!loading && !error && filtered.length === 0 ? (
           <div style={{ opacity: 0.7, marginTop: 12 }}>
             {filter === "all"
               ? "まだ予約がありません。"
+              : filter === "needs"
+              ? "要対応（Threads）はありません。"
               : filter === "pending"
               ? "Pending はありません。"
               : filter === "failed"
@@ -319,39 +437,50 @@ export default function QueuePage() {
         ) : null}
       </div>
 
-{/* ✅ 固定トースト（右下） */}
-{copied ? (
-  <div
-    style={{
-      position: "fixed",
-      right: 16,
-      bottom: 16,
-      zIndex: 1000,
-      border: "1px solid #ddd",
-      background: "#fff",
-      borderRadius: 14,
-      padding: "10px 12px",
-      boxShadow: "0 10px 30px rgba(0,0,0,0.10)",
-      fontSize: 13,
-      display: "inline-flex",
-      alignItems: "center",
-      gap: 8,
-
-      // ふわっと
-      transform: "translateY(0)",
-      opacity: 1,
-      transition: "opacity 160ms ease, transform 160ms ease",
-    }}
-    role="status"
-    aria-live="polite"
-  >
-    <span aria-hidden="true">📋</span>
-    <span>{copied}</span>
-  </div>
-) : null}
-
+      {/* ✅ 固定トースト（右下） */}
+      {copied ? (
+        <div
+          style={{
+            position: "fixed",
+            right: 16,
+            bottom: 16,
+            zIndex: 1000,
+            border: "1px solid #ddd",
+            background: "#fff",
+            borderRadius: 14,
+            padding: "10px 12px",
+            boxShadow: "0 10px 30px rgba(0,0,0,0.10)",
+            fontSize: 13,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 8,
+            transform: "translateY(0)",
+            opacity: 1,
+            transition: "opacity 160ms ease, transform 160ms ease",
+          }}
+          role="status"
+          aria-live="polite"
+        >
+          <span aria-hidden="true">📋</span>
+          <span>{copied}</span>
+        </div>
+      ) : null}
     </main>
   );
+}
+
+function btnStyle(primary = false, danger = false): React.CSSProperties {
+  return {
+    border: "1px solid #ddd",
+    background: primary ? "#111" : "#fff",
+    color: primary ? "#fff" : danger ? "#9b1c1c" : "#111",
+    borderColor: danger ? "#ffb8b8" : "#ddd",
+    borderRadius: 999,
+    padding: "6px 10px",
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: "pointer",
+  };
 }
 
 function FilterButton({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
