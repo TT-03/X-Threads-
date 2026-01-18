@@ -121,6 +121,8 @@ export default function QueuePage() {
 
   // ✅ 自動更新（1分）
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [adminMode, setAdminMode] = useState(false);
+  const [cronSecretCached, setCronSecretCached] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -146,8 +148,15 @@ export default function QueuePage() {
   // ✅ 今すぐ実行（/api/schedule/run を叩く）
   async function runNow() {
     try {
-      const secret = window.prompt("CRON_SECRET を入力してください（管理者用）");
-      if (!secret) return;
+      let secret = cronSecretCached;
+
+      if (!secret) {
+        const input = window.prompt("CRON_SECRET を入力してください（管理者用）");
+        if (!input) return;
+        secret = input;
+        sessionStorage.setItem("xthreads_cron_secret", secret);
+        setCronSecretCached(secret);
+      }
 
       const res = await fetch("/api/schedule/run", {
         method: "GET",
@@ -238,6 +247,10 @@ export default function QueuePage() {
     let alive = true;
     (async () => {
       if (!alive) return;
+
+      const saved = sessionStorage.getItem("xthreads_cron_secret");
+      if (saved) setCronSecretCached(saved);
+
       await load();
     })();
     return () => {
@@ -285,59 +298,80 @@ export default function QueuePage() {
         </div>
 
         {/* ✅ 右上：今すぐ実行 + 自動更新 + 更新 */}
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <button
-            onClick={runNow}
-            style={{
-              border: "1px solid #ddd",
-              background: "#111",
-              color: "#fff",
-              borderRadius: 999,
-              padding: "6px 10px",
-              fontSize: 12,
-              fontWeight: 700,
-              cursor: "pointer",
-            }}
-          >
-            今すぐ実行
-          </button>
+<div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+  <label style={{ fontSize: 12, opacity: 0.85, display: "flex", alignItems: "center", gap: 6 }}>
+    <input type="checkbox" checked={adminMode} onChange={(e) => setAdminMode(e.target.checked)} />
+    管理者モード
+  </label>
 
-          <label style={{ fontSize: 12, opacity: 0.8, display: "flex", alignItems: "center", gap: 6 }}>
-            <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
-            自動更新（1分）
-          </label>
+  {adminMode ? (
+    <>
+      <button
+        onClick={async () => {
+          const input = window.prompt("CRON_SECRET を入力して保存します（タブを閉じるまで有効）");
+          if (!input) return;
+          sessionStorage.setItem("xthreads_cron_secret", input);
+          setCronSecretCached(input);
+          setCopied("CRON_SECRET を保存しました");
+        }}
+        style={btnStyle(true)}
+      >
+        secret保存
+      </button>
 
-          <button
-            onClick={load}
-            disabled={loading}
-            aria-label="refresh"
-            title="更新"
-            style={{
-              border: "1px solid #ddd",
-              background: "#fff",
-              borderRadius: 999,
-              width: 36,
-              height: 36,
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              cursor: loading ? "not-allowed" : "pointer",
-              opacity: loading ? 0.6 : 1,
-              fontWeight: 700,
-            }}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M20 12a8 8 0 1 1-2.34-5.66" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-              <path
-                d="M20 4v6h-6"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
-        </div>
+      <button
+        onClick={() => {
+          sessionStorage.removeItem("xthreads_cron_secret");
+          setCronSecretCached(null);
+          setCopied("secret を削除しました");
+        }}
+        style={btnStyle(false, true)}
+      >
+        secret削除
+      </button>
+
+      <button onClick={runNow} style={btnStyle(true)}>
+        今すぐ実行
+      </button>
+    </>
+  ) : null}
+
+  <label style={{ fontSize: 12, opacity: 0.8, display: "flex", alignItems: "center", gap: 6 }}>
+    <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
+    自動更新（1分）
+  </label>
+
+  <button
+    onClick={load}
+    disabled={loading}
+    aria-label="refresh"
+    title="更新"
+    style={{
+      border: "1px solid #ddd",
+      background: "#fff",
+      borderRadius: 999,
+      width: 36,
+      height: 36,
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      cursor: loading ? "not-allowed" : "pointer",
+      opacity: loading ? 0.6 : 1,
+      fontWeight: 700,
+    }}
+  >
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M20 12a8 8 0 1 1-2.34-5.66" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M20 4v6h-6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  </button>
+</div>
       </div>
 
       {/* フィルタ */}
