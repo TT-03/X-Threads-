@@ -17,7 +17,7 @@ type ScheduledPost = {
 
 type JobResult = {
   id: string;
-  action: "sent" | "failed" | "skipped";
+  action: "sent" | "failed" | "skipped" | "needs_user_action";
   tweetId?: string | null;
   error?: string;
 };
@@ -132,11 +132,11 @@ async function runOnce() {
   const supabase = getSupabaseAdmin();
   const nowIso = new Date().toISOString();
 
-  // ✅ 期限到来の pending を最大10件拾う
+  // ✅ 期限到来の pending を最大10件拾う（x + threads 両方）
   const { data: rows, error: selErr } = await supabase
     .from("scheduled_posts")
     .select("id,user_id,provider,text,run_at,status,attempts")
-    .eq("provider", "x")
+    .in("provider", ["x", "threads"])
     .eq("status", "pending")
     .lte("run_at", nowIso)
     .order("run_at", { ascending: true })
@@ -153,6 +153,7 @@ async function runOnce() {
       processed: 0,
       sent: 0,
       failed: 0,
+      needs_user_action: 0,
       results: [],
       message: "実行対象なし",
     });
@@ -161,10 +162,44 @@ async function runOnce() {
   let processed = 0;
   let sent = 0;
   let failed = 0;
+  let needsUserAction = 0;
   const results: JobResult[] = [];
 
   for (const job of jobs) {
     processed++;
+
+    // ✅ ThreadsはMVPでは自動投稿しない：needs_user_actionへ
+    if ((job.provider ?? "").toLowerCase() === "threads") {
+      // 二重実行防止のため一旦ロック（pending→running）
+      const { data: lockRows, error: lockErr } = await supabase
+        .from("scheduled_posts")
+        .update({ status: "running", updated_at: new Date().toISOString() })
+        .eq("id", job.id)
+        .eq("status", "pending")
+        .select("id");
+
+      if (lockErr || !lockRows || lockRows.length === 0) {
+        results.push({ id: job.id, action: "skipped", error: "lock failed or already running" });
+        continue;
+      }
+
+      await supabase
+        .from("scheduled_posts")
+        .update({
+          status: "needs_user_action",
+          last_error: "Threads is notify-mode in MVP (manual assist required).",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", job.id);
+
+      needsUserAction++;
+      results.push({ id: job.id, action: "needs_user_action" });
+      continue;
+    }
+
+    // -------------------------
+    // ここから X の既存処理（ほぼそのまま）
+    // -------------------------
 
     // ✅ attempts上限チェック（無限ループ防止）
     const attempts = job.attempts ?? 0;
@@ -415,5 +450,5 @@ async function runOnce() {
     results.push({ id: job.id, action: "sent", tweetId });
   }
 
-  return NextResponse.json({ ok: true, processed, sent, failed, results });
+  return NextResponse.json({ ok: true, processed, sent, failed, needs_user_action: needsUserAction, results });
 }
