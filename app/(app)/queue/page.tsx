@@ -123,6 +123,8 @@ export default function QueuePage() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [adminMode, setAdminMode] = useState(false);
   const [cronSecretCached, setCronSecretCached] = useState<string | null>(null);
+  const [autoRun, setAutoRun] = useState(true);   // ✅ 自動実行（1分）
+  const [isRunningNow, setIsRunningNow] = useState(false); // ✅ 二重実行防止
 
   async function load() {
     setLoading(true);
@@ -147,6 +149,9 @@ export default function QueuePage() {
 
   // ✅ 今すぐ実行（/api/schedule/run を叩く）
   async function runNow() {
+    if (isRunningNow) return;
+    setIsRunningNow(true);
+
     try {
       let secret = cronSecretCached;
 
@@ -171,6 +176,8 @@ export default function QueuePage() {
       setCopied(`実行しました：sent=${json?.sent ?? 0}, needs=${json?.needs_user_action ?? 0}`);
     } catch (e: any) {
       setError(String(e?.message ?? e));
+    }finally {
+     setIsRunningNow(false);
     }
   }
 
@@ -260,7 +267,19 @@ export default function QueuePage() {
   }, []);
 
   // ✅ 追加：自動更新（1分）
-  useEffect(() => {
+useEffect(() => {
+  if (!adminMode) return;
+  if (!autoRun) return;
+  if (!cronSecretCached) return;
+
+  const id = setInterval(() => {
+    runNow(); // ✅ 1分ごとに実行 → runNow内でloadも走る
+  }, 60_000);
+
+  return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [adminMode, autoRun, cronSecretCached]);
+
     if (!autoRefresh) return;
     const id = setInterval(() => load(), 60_000);
     return () => clearInterval(id);
@@ -336,10 +355,10 @@ export default function QueuePage() {
     </>
   ) : null}
 
-  <label style={{ fontSize: 12, opacity: 0.8, display: "flex", alignItems: "center", gap: 6 }}>
-    <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
-    自動更新（1分）
-  </label>
+<label style={{ fontSize: 12, opacity: 0.85, display: "flex", alignItems: "center", gap: 6 }}>
+  <input type="checkbox" checked={autoRun} onChange={(e) => setAutoRun(e.target.checked)} />
+  自動実行（1分）
+</label>
 
   <button
     onClick={load}
