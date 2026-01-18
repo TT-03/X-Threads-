@@ -119,6 +119,9 @@ export default function QueuePage() {
   // ✅ コピー通知
   const [copied, setCopied] = useState<string | null>(null);
 
+  // ✅ 自動更新（1分）
+  const [autoRefresh, setAutoRefresh] = useState(true);
+
   async function load() {
     setLoading(true);
     setError(null);
@@ -137,6 +140,28 @@ export default function QueuePage() {
       setGroups([]);
     } finally {
       setLoading(false);
+    }
+  }
+
+  // ✅ 今すぐ実行（/api/schedule/run を叩く）
+  async function runNow() {
+    try {
+      const secret = window.prompt("CRON_SECRET を入力してください（管理者用）");
+      if (!secret) return;
+
+      const res = await fetch("/api/schedule/run", {
+        method: "GET",
+        headers: { Authorization: `Bearer ${secret}` },
+        cache: "no-store",
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
+
+      await load();
+      setCopied(`実行しました：sent=${json?.sent ?? 0}, needs=${json?.needs_user_action ?? 0}`);
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
     }
   }
 
@@ -221,6 +246,14 @@ export default function QueuePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ✅ 追加：自動更新（1分）
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const id = setInterval(() => load(), 60_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRefresh]);
+
   const counts = useMemo(() => {
     const c = { all: groups.length, pending: 0, needs: 0, failed: 0, auth: 0 };
     for (const g of groups) {
@@ -251,36 +284,60 @@ export default function QueuePage() {
           </p>
         </div>
 
-        <button
-          onClick={load}
-          disabled={loading}
-          aria-label="refresh"
-          title="更新"
-          style={{
-            border: "1px solid #ddd",
-            background: "#fff",
-            borderRadius: 999,
-            width: 36,
-            height: 36,
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            cursor: loading ? "not-allowed" : "pointer",
-            opacity: loading ? 0.6 : 1,
-            fontWeight: 700,
-          }}
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M20 12a8 8 0 1 1-2.34-5.66" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            <path
-              d="M20 4v6h-6"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
+        {/* ✅ 右上：今すぐ実行 + 自動更新 + 更新 */}
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button
+            onClick={runNow}
+            style={{
+              border: "1px solid #ddd",
+              background: "#111",
+              color: "#fff",
+              borderRadius: 999,
+              padding: "6px 10px",
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            今すぐ実行
+          </button>
+
+          <label style={{ fontSize: 12, opacity: 0.8, display: "flex", alignItems: "center", gap: 6 }}>
+            <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
+            自動更新（1分）
+          </label>
+
+          <button
+            onClick={load}
+            disabled={loading}
+            aria-label="refresh"
+            title="更新"
+            style={{
+              border: "1px solid #ddd",
+              background: "#fff",
+              borderRadius: 999,
+              width: 36,
+              height: 36,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: loading ? "not-allowed" : "pointer",
+              opacity: loading ? 0.6 : 1,
+              fontWeight: 700,
+            }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M20 12a8 8 0 1 1-2.34-5.66" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              <path
+                d="M20 4v6h-6"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
       </div>
 
       {/* フィルタ */}
@@ -307,7 +364,15 @@ export default function QueuePage() {
       {loading ? <div style={{ marginTop: 16, opacity: 0.7 }}>Loading…</div> : null}
 
       {error ? (
-        <div style={{ marginTop: 16, padding: 12, border: "1px solid #ffb8b8", borderRadius: 12, background: "#fff0f0" }}>
+        <div
+          style={{
+            marginTop: 16,
+            padding: 12,
+            border: "1px solid #ffb8b8",
+            borderRadius: 12,
+            background: "#fff0f0",
+          }}
+        >
           <div style={{ fontWeight: 700 }}>Error</div>
           <div style={{ whiteSpace: "pre-wrap" }}>{error}</div>
           <div style={{ marginTop: 8, opacity: 0.7 }}>※ 未連携（x_user_id cookie無し）の場合は 401 になります</div>
@@ -341,9 +406,7 @@ export default function QueuePage() {
                     {statusLabel(g.group_status)}
                   </span>
 
-                  <span style={{ fontSize: 12, opacity: 0.7 }}>
-                    to: {g.destinations.join(" + ")}
-                  </span>
+                  <span style={{ fontSize: 12, opacity: 0.7 }}>to: {g.destinations.join(" + ")}</span>
                 </div>
 
                 <div style={{ opacity: 0.7, fontSize: 12, textAlign: "right" }}>
@@ -396,10 +459,7 @@ export default function QueuePage() {
                 {/* Threads 要対応のときに出すボタン */}
                 {isNeeds ? (
                   <>
-                    <button
-                      onClick={() => copyText(g.threads?.text ?? g.display_text)}
-                      style={btnStyle()}
-                    >
+                    <button onClick={() => copyText(g.threads?.text ?? g.display_text)} style={btnStyle()}>
                       本文コピー
                     </button>
                     <button onClick={openThreads} style={btnStyle()}>
@@ -412,7 +472,7 @@ export default function QueuePage() {
                 ) : null}
 
                 {/* キャンセル（グループ単位） */}
-                {(g.group_status === "pending" || g.group_status === "running" || g.group_status === "needs_user_action") ? (
+                {g.group_status === "pending" || g.group_status === "running" || g.group_status === "needs_user_action" ? (
                   <button onClick={() => cancelGroup(g)} style={btnStyle(false, true)}>
                     キャンセル
                   </button>
