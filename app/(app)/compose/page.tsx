@@ -20,19 +20,23 @@ type ToastState = {
 export default function ComposePage() {
   const router = useRouter();
   const [text, setText] = useState("");
-  const [platform, setPlatform] = useState<"x" | "threads">("x");
+
+  // ✅ 投稿先チェックボックス（複数選択）
+  const [destX, setDestX] = useState(true);
+  const [destThreads, setDestThreads] = useState(false);
+
   const [toast, setToast] = useState<ToastState | null>(null);
   const [isPosting, setIsPosting] = useState(false);
   const [isScheduling, setIsScheduling] = useState(false);
-
 
   // ✅ 追加：レート制限（429）カウントダウン
   const [rateLimitUntil, setRateLimitUntil] = useState<number | null>(null);
   const [rateLimitRemaining, setRateLimitRemaining] = useState(0);
 
-  const xCount = useMemo(() => countXChars(text), [text]);
+  const trimmed = useMemo(() => text.trim(), [text]);
+  const xCount = useMemo(() => countXChars(trimmed), [trimmed]);
 
-  // トーストは数秒で自動で消す（邪魔になりすぎないように）
+  // トーストは数秒で自動で消す
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 6000);
@@ -41,7 +45,7 @@ export default function ComposePage() {
 
   const isRateLimited = rateLimitUntil != null && Date.now() < rateLimitUntil;
 
-  // ✅ 追加：429のカウントダウン更新
+  // ✅ 429のカウントダウン更新
   useEffect(() => {
     if (!rateLimitUntil) return;
 
@@ -60,10 +64,23 @@ export default function ComposePage() {
     setToast(next);
   }
 
-  async function postNow() {
+  const destinations = useMemo(() => {
+    const d: ("x" | "threads")[] = [];
+    if (destX) d.push("x");
+    if (destThreads) d.push("threads");
+    return d;
+  }, [destX, destThreads]);
+
+  const canPostNowX = destX && !!trimmed && !isPosting && !isRateLimited;
+
+  async function postNowX() {
     if (isPosting) return;
 
-    // ✅ 追加：制限中は押せない
+    if (!destX) {
+      showToast({ kind: "info", title: "Xが未選択です", detail: "今すぐ投稿はXのみ対応です。" });
+      return;
+    }
+
     if (isRateLimited) {
       showToast({
         kind: "error",
@@ -73,13 +90,20 @@ export default function ComposePage() {
       return;
     }
 
+    if (!trimmed) return;
+
+    if (countXChars(trimmed) > 280) {
+      showToast({ kind: "error", title: "文字数オーバーです", detail: "Xは280文字以内にしてください。" });
+      return;
+    }
+
     setIsPosting(true);
 
     try {
       const res = await fetch("/api/x/tweet", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text: trimmed }),
       });
 
       const data = await res.json().catch(() => ({} as any));
@@ -91,9 +115,7 @@ export default function ComposePage() {
         const is429 = res.status === 429 || data?.error === "RATE_LIMITED";
         if (is429) {
           const retryAfter =
-            typeof data?.retryAfter === "number" && Number.isFinite(data.retryAfter)
-              ? data.retryAfter
-              : 60;
+            typeof data?.retryAfter === "number" && Number.isFinite(data.retryAfter) ? data.retryAfter : 60;
 
           setRateLimitUntil(Date.now() + retryAfter * 1000);
 
@@ -105,7 +127,6 @@ export default function ComposePage() {
           return;
         }
 
-        // APIが返す message を優先
         const msg =
           (typeof data?.message === "string" && data.message) ||
           (typeof data?.error === "string" && data.error) ||
@@ -113,7 +134,6 @@ export default function ComposePage() {
           (typeof data?.detail === "string" && data.detail) ||
           "投稿に失敗しました。";
 
-        // 重複投稿
         const isDuplicate = res.status === 409 || data?.error === "DUPLICATE_TWEET";
 
         showToast({
@@ -121,25 +141,24 @@ export default function ComposePage() {
           title: isDuplicate ? "同じ内容の投稿はできません" : "投稿に失敗しました",
           detail: String(msg),
           actionLabel: connectUrl ? "連携する" : undefined,
-          onAction: connectUrl ? () => router.push(connectUrl) : undefined, // 同一タブで /accounts
+          onAction: connectUrl ? () => router.push(connectUrl) : undefined,
         });
         return;
       }
 
-      // 成功時：Tweet ID から投稿URLを作って「投稿を開く」
       const tweetId = data?.data?.id as string | undefined;
       const href = tweetId ? `https://x.com/i/web/status/${tweetId}` : undefined;
 
       showToast({
         kind: "success",
-        title: "投稿しました",
+        title: "投稿しました（X）",
         detail: tweetId ? `Tweet ID: ${tweetId}` : undefined,
         actionLabel: href ? "投稿を開く" : undefined,
-        onAction: href ? () => window.open(href, "_blank", "noreferrer") : undefined, // ✅ Xは別タブが安全
+        onAction: href ? () => window.open(href, "_blank", "noreferrer") : undefined,
       });
 
       setText("");
-    } catch (e) {
+    } catch {
       showToast({
         kind: "error",
         title: "通信エラー",
@@ -150,67 +169,69 @@ export default function ComposePage() {
     }
   }
 
-async function schedule() {
-  if (isScheduling || isPosting) return;
+  async function schedule() {
+    if (isScheduling || isPosting) return;
 
-  if (platform !== "x") {
-    showToast({ kind: "info", title: "Threadsは準備中です", detail: "今はXのみ予約できます。" });
-    return;
-  }
+    if (!trimmed) return;
 
-  const trimmed = text.trim();
-  if (!trimmed) return;
-
-  if (countXChars(trimmed) > 280) {
-    showToast({ kind: "error", title: "文字数オーバーです", detail: "Xは280文字以内にしてください。" });
-    return;
-  }
-
-  setIsScheduling(true);
-
-  try {
-    const runAt = new Date(Date.now() + 2 * 60 * 1000).toISOString(); // 2分後
-
-    const res = await fetch("/api/schedule", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-body: JSON.stringify({
-  provider: "x",
-  text: trimmed,
-
-  // ✅ 当面は両方送る（サーバ側が runAt/run_at どちらでも受けられるように）
-  runAt,
-  run_at: runAt,
-}),
-    });
-
-    const data = await res.json().catch(() => ({} as any));
-
-    if (!res.ok) {
-      const msg =
-        (typeof data?.error === "string" && data.error) ||
-        (typeof data?.message === "string" && data.message) ||
-        "予約に失敗しました。";
-      showToast({ kind: "error", title: "予約に失敗しました", detail: String(msg) });
+    if (destinations.length === 0) {
+      showToast({ kind: "error", title: "投稿先が未選択です", detail: "XまたはThreadsを選んでください。" });
       return;
     }
 
-    showToast({
-  kind: "success",
-  title: "予約しました",
-  detail: `実行: ${new Date(data?.scheduled?.run_at ?? runAt).toLocaleString()}`,
-  actionLabel: "予約一覧を見る",
-  onAction: () => router.push("/queue"),
-});
+    // Xが選ばれている時だけ280チェック
+    if (destX && countXChars(trimmed) > 280) {
+      showToast({ kind: "error", title: "文字数オーバーです", detail: "Xは280文字以内にしてください。" });
+      return;
+    }
 
-    setText("");
-  } catch {
-    showToast({ kind: "error", title: "通信エラー", detail: "ネットワーク状況を確認して、もう一度お試しください。" });
-  } finally {
-    setIsScheduling(false);
+    setIsScheduling(true);
+
+    try {
+      const runAt = new Date(Date.now() + 2 * 60 * 1000).toISOString(); // 2分後（仮）
+
+      // ✅ 新仕様：items + destinations で送る
+      const res = await fetch("/api/schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: [
+            {
+              text: trimmed,
+              runAt,
+              run_at: runAt, // 互換のため両方
+              destinations,  // ["x","threads"] 等
+            },
+          ],
+        }),
+      });
+
+      const data = await res.json().catch(() => ({} as any));
+
+      if (!res.ok) {
+        const msg =
+          (typeof data?.error === "string" && data.error) ||
+          (typeof data?.message === "string" && data.message) ||
+          "予約に失敗しました。";
+        showToast({ kind: "error", title: "予約に失敗しました", detail: String(msg) });
+        return;
+      }
+
+      showToast({
+        kind: "success",
+        title: "予約しました",
+        detail: `実行: ${new Date(runAt).toLocaleString()}`,
+        actionLabel: "予約一覧を見る",
+        onAction: () => router.push("/queue"),
+      });
+
+      setText("");
+    } catch {
+      showToast({ kind: "error", title: "通信エラー", detail: "ネットワーク状況を確認して、もう一度お試しください。" });
+    } finally {
+      setIsScheduling(false);
+    }
   }
-}
-
 
   return (
     <section className="space-y-4">
@@ -218,27 +239,26 @@ body: JSON.stringify({
         <div className="flex items-center justify-between">
           <div className="text-sm font-semibold">投稿を作成</div>
           <div className="text-xs text-neutral-500">
-            {platform === "x" ? `X: ${xCount}/280` : "Threads: (後で制限対応)"}
+            {destX ? `X: ${xCount}/280` : "X: 未選択"} / {destThreads ? "Threads: 選択中" : "Threads: 未選択"}
           </div>
         </div>
 
-        <div className="mt-3 flex gap-2">
-          <button
-            className={`flex-1 rounded-2xl px-3 py-2 text-sm font-semibold ${
-              platform === "x" ? "bg-neutral-900 text-white" : "bg-neutral-100 text-neutral-700"
-            }`}
-            onClick={() => setPlatform("x")}
-          >
-            X
-          </button>
-          <button
-            className={`flex-1 rounded-2xl px-3 py-2 text-sm font-semibold ${
-              platform === "threads" ? "bg-neutral-900 text-white" : "bg-neutral-100 text-neutral-700"
-            }`}
-            onClick={() => setPlatform("threads")}
-          >
-            Threads（準備中）
-          </button>
+        {/* ✅ 投稿先チェックボックス */}
+        <div className="mt-3 rounded-2xl border bg-white p-3">
+          <div className="text-xs font-semibold text-neutral-700">投稿先（複数選択可）</div>
+          <div className="mt-2 flex gap-4 text-sm">
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={destX} onChange={(e) => setDestX(e.target.checked)} />
+              <span>X</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={destThreads} onChange={(e) => setDestThreads(e.target.checked)} />
+              <span>Threads（通知投稿）</span>
+            </label>
+          </div>
+          <div className="mt-2 text-xs text-neutral-500">
+            ※ ThreadsはMVPでは「要対応（通知）」になります（Queueでコピー→完了）。
+          </div>
         </div>
 
         <textarea
@@ -258,15 +278,16 @@ body: JSON.stringify({
         <div className="mt-3 grid grid-cols-2 gap-2">
           <button
             className="rounded-2xl bg-neutral-900 px-3 py-3 text-sm font-semibold text-white disabled:opacity-40"
-            onClick={postNow}
-            disabled={!text.trim() || platform !== "x" || isPosting || isRateLimited}
+            onClick={postNowX}
+            disabled={!canPostNowX || !destX}
           >
             {isPosting ? "投稿中…" : isRateLimited ? `制限中（${rateLimitRemaining}s）` : "今すぐ投稿（X）"}
           </button>
+
           <button
             className="rounded-2xl bg-neutral-100 px-3 py-3 text-sm font-semibold text-neutral-800 active:bg-neutral-200 disabled:opacity-40"
             onClick={schedule}
-            disabled={isPosting || isScheduling || !text.trim() || platform !== "x"}
+            disabled={isPosting || isScheduling || !trimmed || destinations.length === 0}
           >
             {isScheduling ? "予約中…" : "予約に入れる"}
           </button>
@@ -287,42 +308,37 @@ body: JSON.stringify({
         <div className="fixed inset-x-0 bottom-0 z-50 p-4 pb-[calc(env(safe-area-inset-bottom)+16px)]">
           <div className="mx-auto max-w-md rounded-2xl border bg-white p-4 shadow-lg">
             <div className="flex items-start justify-between gap-3">
-  <div className="min-w-0 flex-1">
-    <div className="text-sm font-semibold">
-      {toast.kind === "success" ? "✅ " : toast.kind === "error" ? "⚠️ " : "ℹ️ "}
-      {toast.title}
-    </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold">
+                  {toast.kind === "success" ? "✅ " : toast.kind === "error" ? "⚠️ " : "ℹ️ "}
+                  {toast.title}
+                </div>
 
-    {toast.detail && (
-      <div className="mt-1 break-words text-xs text-neutral-600">
-        {toast.detail}
-      </div>
-    )}
+                {toast.detail && <div className="mt-1 break-words text-xs text-neutral-600">{toast.detail}</div>}
 
-    <div className="mt-3 flex flex-wrap gap-2">
-      {toast.onAction && toast.actionLabel && (
-        <button
-          onClick={() => {
-            toast.onAction?.();
-            setToast(null);
-          }}
-          className="inline-flex items-center justify-center rounded-xl bg-neutral-900 px-3 py-2 text-sm font-semibold text-white"
-        >
-          {toast.actionLabel}
-        </button>
-      )}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {toast.onAction && toast.actionLabel && (
+                    <button
+                      onClick={() => {
+                        toast.onAction?.();
+                        setToast(null);
+                      }}
+                      className="inline-flex items-center justify-center rounded-xl bg-neutral-900 px-3 py-2 text-sm font-semibold text-white"
+                    >
+                      {toast.actionLabel}
+                    </button>
+                  )}
 
-      <button
-        onClick={() => setToast(null)}
-        className="rounded-xl bg-neutral-100 px-3 py-2 text-sm font-semibold text-neutral-800"
-        aria-label="close"
-      >
-        閉じる
-      </button>
-    </div>
-  </div>
-</div>
-
+                  <button
+                    onClick={() => setToast(null)}
+                    className="rounded-xl bg-neutral-100 px-3 py-2 text-sm font-semibold text-neutral-800"
+                    aria-label="close"
+                  >
+                    閉じる
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
