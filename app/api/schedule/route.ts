@@ -63,9 +63,10 @@ export async function POST(req: Request) {
         ? it.providers.map((v: any) => String(v))
         : [String(it?.provider ?? "x")];
 
-      const normDest = Array.from(new Set(destinations))
-        .map((d) => d.toLowerCase())
-        .filter((d) => d === "x" || d === "threads");
+      const normDest = Array.from(new Set(destinations as string[]))
+  .map((d: string) => d.toLowerCase())
+  .filter((d: string) => d === "x" || d === "threads");
+
 
       if (normDest.length === 0) {
         return NextResponse.json(
