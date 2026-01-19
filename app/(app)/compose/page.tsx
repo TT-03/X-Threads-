@@ -316,7 +316,7 @@ const runAtPreview = useMemo(() => {
           </div>
         </div>
 
-        {/* ✅ 追加：予約日時 */}
+{/* ✅ 追加：予約日時 */}
 <div className="mt-3 rounded-2xl border bg-white p-3">
   <div className="text-xs font-semibold text-neutral-700">予約日時</div>
 
@@ -328,6 +328,13 @@ const runAtPreview = useMemo(() => {
       onChange={(e) => setRunAtLocal(e.target.value)}
       step={60}
     />
+    <button
+      type="button"
+      className="rounded-xl bg-neutral-100 px-3 py-2 text-sm font-semibold text-neutral-800 active:bg-neutral-200"
+      onClick={() => setRunAtLocal(toDatetimeLocalValue(new Date(Date.now() + 3 * 60 * 1000)))}
+    >
+      今+3分に戻す
+    </button>
   </div>
 
   {runAtPreview && (
@@ -336,7 +343,6 @@ const runAtPreview = useMemo(() => {
 
   <div className="mt-2 text-xs text-neutral-500">※ 30秒以上先の日時にしてください</div>
 </div>
-        </div>
 
         <textarea
           className="mt-3 h-40 w-full resize-none rounded-2xl border bg-white p-3 text-sm leading-relaxed outline-none focus:ring-2 focus:ring-neutral-200"
