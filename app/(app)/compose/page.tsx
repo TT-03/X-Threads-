@@ -17,6 +17,30 @@ type ToastState = {
   onAction?: () => void;
 };
 
+// datetime-local 用（ローカル時刻の "YYYY-MM-DDTHH:mm" を作る）
+function toDatetimeLocalValue(d: Date) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const y = d.getFullYear();
+  const m = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  const hh = pad(d.getHours());
+  const mm = pad(d.getMinutes());
+  return `${y}-${m}-${day}T${hh}:${mm}`;
+}
+
+// datetime-local ("YYYY-MM-DDTHH:mm") をローカル時刻として Date にする
+function parseDatetimeLocal(value: string): Date | null {
+  if (!value) return null;
+  const [datePart, timePart] = value.split("T");
+  if (!datePart || !timePart) return null;
+
+  const [y, m, d] = datePart.split("-").map((v) => Number(v));
+  const [hh, mm] = timePart.split(":").map((v) => Number(v));
+  if (!y || !m || !d || Number.isNaN(hh) || Number.isNaN(mm)) return null;
+
+  return new Date(y, m - 1, d, hh, mm, 0);
+}
+
 export default function ComposePage() {
   const router = useRouter();
   const [text, setText] = useState("");
@@ -24,6 +48,13 @@ export default function ComposePage() {
   // ✅ 投稿先チェックボックス（複数選択）
   const [destX, setDestX] = useState(true);
   const [destThreads, setDestThreads] = useState(false);
+
+  // ✅ 追加：予約日時（datetime-local）
+  // 初期値：今から3分後
+  const [runAtLocal, setRunAtLocal] = useState<string>(() => {
+    const d = new Date(Date.now() + 3 * 60 * 1000);
+    return toDatetimeLocalValue(d);
+  });
 
   const [toast, setToast] = useState<ToastState | null>(null);
   const [isPosting, setIsPosting] = useState(false);
@@ -171,7 +202,6 @@ export default function ComposePage() {
 
   async function schedule() {
     if (isScheduling || isPosting) return;
-
     if (!trimmed) return;
 
     if (destinations.length === 0) {
@@ -185,10 +215,21 @@ export default function ComposePage() {
       return;
     }
 
+    // ✅ 予約日時チェック（最低：今から30秒以上先）
+    const d = parseDatetimeLocal(runAtLocal);
+    if (!d) {
+      showToast({ kind: "error", title: "予約日時が不正です", detail: "日時を選び直してください。" });
+      return;
+    }
+    if (d.getTime() < Date.now() + 30_000) {
+      showToast({ kind: "error", title: "予約が早すぎます", detail: "今から30秒以上先の日時にしてください。" });
+      return;
+    }
+
     setIsScheduling(true);
 
     try {
-      const runAt = new Date(Date.now() + 2 * 60 * 1000).toISOString(); // 2分後（仮）
+      const runAt = d.toISOString(); // APIへはISOで送る
 
       // ✅ 新仕様：items + destinations で送る
       const res = await fetch("/api/schedule", {
@@ -200,7 +241,7 @@ export default function ComposePage() {
               text: trimmed,
               runAt,
               run_at: runAt, // 互換のため両方
-              destinations,  // ["x","threads"] 等
+              destinations, // ["x","threads"] 等
             },
           ],
         }),
@@ -261,6 +302,28 @@ export default function ComposePage() {
           </div>
         </div>
 
+        {/* ✅ 追加：予約日時 */}
+        <div className="mt-3 rounded-2xl border bg-white p-3">
+          <div className="text-xs font-semibold text-neutral-700">予約日時</div>
+          <div className="mt-2 flex items-center gap-3">
+            <input
+              type="datetime-local"
+              className="rounded-xl border bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-200"
+              value={runAtLocal}
+              onChange={(e) => setRunAtLocal(e.target.value)}
+              step={60}
+            />
+            <button
+              type="button"
+              className="rounded-xl bg-neutral-100 px-3 py-2 text-sm font-semibold text-neutral-800 active:bg-neutral-200"
+              onClick={() => setRunAtLocal(toDatetimeLocalValue(new Date(Date.now() + 3 * 60 * 1000)))}
+            >
+              今+3分に戻す
+            </button>
+          </div>
+          <div className="mt-2 text-xs text-neutral-500">※ 30秒以上先の日時にしてください</div>
+        </div>
+
         <textarea
           className="mt-3 h-40 w-full resize-none rounded-2xl border bg-white p-3 text-sm leading-relaxed outline-none focus:ring-2 focus:ring-neutral-200"
           placeholder="ここに文章を貼る / 書く（MVP）"
@@ -270,9 +333,7 @@ export default function ComposePage() {
 
         {/* ✅ 任意：制限中の表示 */}
         {isRateLimited && (
-          <div className="mt-2 text-xs text-amber-700">
-            制限中：あと {rateLimitRemaining} 秒で再投稿できます
-          </div>
+          <div className="mt-2 text-xs text-amber-700">制限中：あと {rateLimitRemaining} 秒で再投稿できます</div>
         )}
 
         <div className="mt-3 grid grid-cols-2 gap-2">
