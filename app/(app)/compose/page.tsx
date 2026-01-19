@@ -102,6 +102,20 @@ export default function ComposePage() {
     return d;
   }, [destX, destThreads]);
 
+const runAtDate = useMemo(() => parseDatetimeLocal(runAtLocal), [runAtLocal]);
+
+const runAtPreview = useMemo(() => {
+  if (!runAtDate) return "";
+  return runAtDate.toLocaleString("ja-JP", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}, [runAtDate]);
+
   const canPostNowX = destX && !!trimmed && !isPosting && !isRateLimited;
 
   async function postNowX() {
@@ -303,18 +317,25 @@ export default function ComposePage() {
         </div>
 
         {/* ✅ 追加：予約日時 */}
-        <div className="mt-3 rounded-2xl border bg-white p-3">
-          <div className="text-xs font-semibold text-neutral-700">予約日時</div>
-          <div className="mt-2 flex items-center gap-3">
-            <input
-              type="datetime-local"
-              className="rounded-xl border bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-200"
-              value={runAtLocal}
-              onChange={(e) => setRunAtLocal(e.target.value)}
-              step={60}
-            />
-          </div>
-          <div className="mt-2 text-xs text-neutral-500">※ 30秒以上先の日時にしてください</div>
+<div className="mt-3 rounded-2xl border bg-white p-3">
+  <div className="text-xs font-semibold text-neutral-700">予約日時</div>
+
+  <div className="mt-2 flex items-center gap-3">
+    <input
+      type="datetime-local"
+      className="rounded-xl border bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-200"
+      value={runAtLocal}
+      onChange={(e) => setRunAtLocal(e.target.value)}
+      step={60}
+    />
+  </div>
+
+  {runAtPreview && (
+    <div className="mt-2 text-xs text-neutral-500">表示: {runAtPreview}</div>
+  )}
+
+  <div className="mt-2 text-xs text-neutral-500">※ 30秒以上先の日時にしてください</div>
+</div>
         </div>
 
         <textarea
