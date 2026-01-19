@@ -184,7 +184,8 @@ export async function POST(req: Request) {
     if ((stuck.data ?? []).length > 0) alerts.push({ type: "stuck_pending", rows: stuck.data });
 
     if (alerts.length === 0) {
-      return NextResponse.json({ ok: true, mode: "monitor", alerts: 0 });
+      return NextResponse.json({ mode: "monitor", alerts: alerts.length, ...r });
+
     }
 
     // メール本文
@@ -214,7 +215,7 @@ export async function POST(req: Request) {
       dedupeKey,
     });
 
-    return NextResponse.json({ ok: true, mode: "monitor", alerts: alerts.length, ...r });
+    return NextResponse.json({ mode: "error-report", ...r });
   } catch (e: any) {
     return NextResponse.json(
       { ok: false, mode: "monitor", error: String(e?.message ?? e) },
