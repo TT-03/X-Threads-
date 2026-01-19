@@ -476,13 +476,16 @@ export default function QueuePage() {
                 </div>
 
                 <div style={{ opacity: 0.7, fontSize: 12, textAlign: "right" }}>
-                  <div>{g.run_at ? new Date(g.run_at).toLocaleString("ja-JP", {
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-})
+<div>
+  {g.run_at
+    ? new Date(g.run_at).toLocaleString("ja-JP", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "-"}
 </div>
 
                   <div
