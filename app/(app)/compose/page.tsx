@@ -110,13 +110,6 @@ export default function ComposePage() {
     return d;
   }, [destX, destThreads]);
 
-const runAtDate = useMemo(() => parseDatetimeLocal(runAtLocal), [runAtLocal]);
-
-const runAtPreview = useMemo(() => {
-  if (!runAtDate) return "";
-  return formatJPWithWeekday(runAtDate);
-}, [runAtDate]);
-
   const canPostNowX = destX && !!trimmed && !isPosting && !isRateLimited;
 
   async function postNowX() {
@@ -329,17 +322,8 @@ const runAtPreview = useMemo(() => {
       onChange={(e) => setRunAtLocal(e.target.value)}
       step={60}
     />
-    <button
-      type="button"
-      className="rounded-xl bg-neutral-100 px-3 py-2 text-sm font-semibold text-neutral-800 active:bg-neutral-200"
-      onClick={() => setRunAtLocal(toDatetimeLocalValue(new Date(Date.now() + 3 * 60 * 1000)))}
-    >
-      今+3分に戻す
-    </button>
   </div>
-
-  {runAtPreview && (
-    <div className="mt-2 text-xs text-neutral-500">表示: {runAtPreview}</div>
+</div>
   )}
 
   <div className="mt-2 text-xs text-neutral-500">※ 30秒以上先の日時にしてください</div>
