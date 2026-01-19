@@ -41,6 +41,14 @@ function parseDatetimeLocal(value: string): Date | null {
   return new Date(y, m - 1, d, hh, mm, 0);
 }
 
+function formatJPWithWeekday(d: Date) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const w = ["日", "月", "火", "水", "木", "金", "土"][d.getDay()];
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}(${w}) ${pad(
+    d.getHours()
+  )}:${pad(d.getMinutes())}`;
+}
+
 export default function ComposePage() {
   const router = useRouter();
   const [text, setText] = useState("");
@@ -106,14 +114,7 @@ const runAtDate = useMemo(() => parseDatetimeLocal(runAtLocal), [runAtLocal]);
 
 const runAtPreview = useMemo(() => {
   if (!runAtDate) return "";
-  return runAtDate.toLocaleString("ja-JP", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatJPWithWeekday(runAtDate);
 }, [runAtDate]);
 
   const canPostNowX = destX && !!trimmed && !isPosting && !isRateLimited;
