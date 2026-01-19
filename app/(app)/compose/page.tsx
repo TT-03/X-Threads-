@@ -313,13 +313,6 @@ export default function ComposePage() {
               onChange={(e) => setRunAtLocal(e.target.value)}
               step={60}
             />
-            <button
-              type="button"
-              className="rounded-xl bg-neutral-100 px-3 py-2 text-sm font-semibold text-neutral-800 active:bg-neutral-200"
-              onClick={() => setRunAtLocal(toDatetimeLocalValue(new Date(Date.now() + 3 * 60 * 1000)))}
-            >
-              今+3分に戻す
-            </button>
           </div>
           <div className="mt-2 text-xs text-neutral-500">※ 30秒以上先の日時にしてください</div>
         </div>
