@@ -1,8 +1,9 @@
-import { getCookie } from "../_lib/cookies";
+import { cookies } from "next/headers";
 
-// x_user_id（cookie）の値で管理者判定する版（外部ライブラリ不要）
+// x_user_id(cookie)の値で管理者判定する版（外部ファイル不要）
 export async function requireAdmin() {
-  const userId = await getCookie("x_user_id");
+  const userId = cookies().get("x_user_id")?.value;
+
   if (!userId) {
     return { ok: false as const, status: 401, reason: "Missing x_user_id cookie" };
   }
@@ -12,9 +13,7 @@ export async function requireAdmin() {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const isAdmin = admins.includes(userId);
-
-  if (!isAdmin) {
+  if (!admins.includes(userId)) {
     return { ok: false as const, status: 403, reason: "Not admin" };
   }
 
