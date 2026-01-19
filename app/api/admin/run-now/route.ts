@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireAdmin } from "@/lib/admin";
+import { requireAdmin } from "../../../../lib/admin";
 
 export async function POST() {
   const auth = await requireAdmin();
