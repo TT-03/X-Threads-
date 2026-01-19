@@ -62,7 +62,7 @@ export async function POST(req: Request) {
 
   const { data, error } = await sb
     .from("scheduled_posts")
-    .select("id, status, run_at, text, destinations, group_id, created_at")
+    .select("id, status, run_at, text, group_id, created_at")
     .in("status", [...BAD_STATUSES])
     .gte("run_at", sinceIso)
     .order("run_at", { ascending: false })
@@ -87,12 +87,8 @@ export async function POST(req: Request) {
 
     const lines = alerts.map((p) => {
       const when = p.run_at ? new Date(p.run_at).toLocaleString("ja-JP") : "no run_at";
-      const dest = Array.isArray((p as any).destinations)
-        ? (p as any).destinations.join(",")
-        : (p as any).destinations ?? "";
       const title = (p.text ?? "").slice(0, 60).replace(/\n/g, " ");
-      return `- [${p.status}] ${when} dest=${dest} id=${p.id} ${title}`;
-    });
+      return `- [${p.status}] ${when} id=${p.id} ${title}`;
 
     const subject = `[X-Threads] Queue alerts: ${alerts.length}`;
     const text =
