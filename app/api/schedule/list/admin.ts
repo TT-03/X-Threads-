@@ -1,19 +1,22 @@
-import { cookies } from "next/headers";
-import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
-import type { Database } from "@/lib/database.types"; // 既にある型に合わせて
+import { getCookie } from "../_lib/cookies";
 
+// x_user_id（cookie）の値で管理者判定する版（外部ライブラリ不要）
 export async function requireAdmin() {
-  const supabase = createRouteHandlerClient<Database>({ cookies });
-  const { data: { user }, error } = await supabase.auth.getUser();
-  if (error || !user?.email) return { ok: false as const, status: 401, user: null };
+  const userId = await getCookie("x_user_id");
+  if (!userId) {
+    return { ok: false as const, status: 401, reason: "Missing x_user_id cookie" };
+  }
 
-  const admins = (process.env.ADMIN_EMAILS ?? "")
+  const admins = (process.env.ADMIN_X_USER_IDS ?? "")
     .split(",")
-    .map(s => s.trim().toLowerCase())
+    .map((s) => s.trim())
     .filter(Boolean);
 
-  const isAdmin = admins.includes(user.email.toLowerCase());
-  if (!isAdmin) return { ok: false as const, status: 403, user };
+  const isAdmin = admins.includes(userId);
 
-  return { ok: true as const, status: 200, user };
+  if (!isAdmin) {
+    return { ok: false as const, status: 403, reason: "Not admin" };
+  }
+
+  return { ok: true as const, status: 200, userId };
 }
