@@ -1,225 +1,284 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
-import { sendAlertEmail } from "../../../../lib/alertEmail";
+import { sendAlertEmail } from "@/lib/alertEmail";
 
 export const runtime = "nodejs";
 
-// ===== 共通：Cron認証（Authorization: Bearer <CRON_SECRET>） =====
-function requireCron(req: Request) {
-  const auth = req.headers.get("authorization") || "";
-  const token = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
+type ErrorReportBody = {
+  status: number;
+  url: string;
+  responseText?: string;
+};
 
-  const secret = process.env.CRON_SECRET || "";
-  if (!secret || token !== secret) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  return null;
+function json(status: number, data: any) {
+  return NextResponse.json(data, { status });
 }
 
-// ===== Supabase admin client =====
-function getSupabaseAdmin() {
-  const url = process.env.SUPABASE_URL!;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+function getBearer(req: Request) {
+  const h = req.headers.get("authorization") || req.headers.get("Authorization") || "";
+  const m = h.match(/^Bearer\s+(.+)$/i);
+  return m ? m[1] : "";
+}
+
+function sha256(text: string) {
+  return crypto.createHash("sha256").update(text).digest("hex");
+}
+
+function nowMs() {
+  return Date.now();
+}
+
+function minutesToMs(min: number) {
+  return min * 60 * 1000;
+}
+
+function safeStr(v: unknown) {
+  return typeof v === "string" ? v : "";
+}
+
+function normalizeForSignature(body: ErrorReportBody) {
+  // 余計な揺れを減らす：改行/連続スペースを潰す（内容が同じなら同じ署名になりやすく）
+  const resp = safeStr(body.responseText)
+    .replace(/\r\n/g, "\n")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 2000);
+  return `${body.status}|${body.url}|${resp}`;
+}
+
+function buildEmailText(kind: "monitor" | "report", payload: any) {
+  if (kind === "report") {
+    const b = payload as ErrorReportBody;
+    const resp = safeStr(b.responseText).slice(0, 4000);
+    return [
+      "Cronが失敗しました。",
+      "",
+      `Status: ${b.status}`,
+      `URL: ${b.url}`,
+      "",
+      "Response:",
+      resp || "(empty)",
+    ].join("\n");
+  }
+
+  // monitor
+  const items: string[] = payload.items || [];
+  return [
+    "モニター検知:",
+    "",
+    ...items,
+    "",
+    `checkedAt: ${new Date().toISOString()}`,
+  ].join("\n");
+}
+
+function buildSubject(kind: "monitor" | "report", title: string) {
+  return kind === "report"
+    ? `[X-Threads] Cron error: ${title} (report)`
+    : `[X-Threads] Cron error: ${title} (monitor)`;
+}
+
+async function getSupabaseAdmin() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
   return createClient(url, key, { auth: { persistSession: false } });
 }
 
-// ===== 抑制（デデュープ） =====
-function sha256(s: string) {
-  return crypto.createHash("sha256").update(s).digest("hex");
-}
+/**
+ * 同じ内容のメールを一定時間抑制するためのDBテーブル:
+ *   alert_dedupe(signature text primary key, last_sent_at timestamptz)
+ */
+async function shouldSendByDedupe(signature: string, suppressMinutes: number) {
+  const supabase = await getSupabaseAdmin();
 
-function getDedupeMinutes(kind: "report" | "monitor") {
-  // 同じ内容を送らない時間（分）
-  // 例: Vercel Env に ALERT_DEDUPE_REPORT_MINUTES=30, ALERT_DEDUPE_MONITOR_MINUTES=60 など
-  const fallback = kind === "monitor" ? 60 : 30;
-  const key =
-    kind === "monitor" ? "ALERT_DEDUPE_MONITOR_MINUTES" : "ALERT_DEDUPE_REPORT_MINUTES";
-  const v = Number(process.env[key]);
-  return Number.isFinite(v) && v > 0 ? v : fallback;
-}
-
-async function sendAlertOnce(
-  supabase: ReturnType<typeof getSupabaseAdmin>,
-  params: { kind: "report" | "monitor"; subject: string; text: string; dedupeKey: string }
-) {
-  const minutes = getDedupeMinutes(params.kind);
-  const windowMs = minutes * 60 * 1000;
-  const now = Date.now();
-  const nowIso = new Date(now).toISOString();
-
-  // 既存取得
-  const existing = await supabase
+  const { data, error } = await supabase
     .from("alert_dedupe")
-    .select("alert_key,last_sent_at,sent_count")
-    .eq("alert_key", params.dedupeKey)
+    .select("signature,last_sent_at")
+    .eq("signature", signature)
     .maybeSingle();
 
-  if (existing.error) {
-    // デデュープテーブルが読めない等でも「通知は落とさない」方針で送る
-    await sendAlertEmail(params.subject, params.text);
-    return { ok: true, sent: true, suppressed: false, reason: "dedupe_read_failed" };
+  if (error) {
+    // テーブル未作成などでも「とりあえず送れる」ようにする（落とさない）
+    return { ok: true as const, reason: "dedupe_table_error", detail: error.message };
   }
 
-  const lastSentAt = existing.data?.last_sent_at
-    ? new Date(existing.data.last_sent_at).getTime()
-    : 0;
-
-  const withinWindow = lastSentAt > 0 && now - lastSentAt < windowMs;
-
-  // 送信履歴を upsert（回数もカウント）
-  const nextCount = (existing.data?.sent_count ?? 0) + 1;
-
-  if (withinWindow) {
-    // 抑制：last_sent_at は更新しない（ウィンドウ延長を防ぐ）
-    await supabase
-      .from("alert_dedupe")
-      .upsert(
-        {
-          alert_key: params.dedupeKey,
-          last_sent_at: existing.data!.last_sent_at,
-          sent_count: nextCount,
-          last_subject: params.subject,
-          last_body: params.text.slice(0, 2000),
-          updated_at: nowIso,
-        },
-        { onConflict: "alert_key" }
-      );
-
-    return { ok: true, sent: false, suppressed: true, dedupeMinutes: minutes };
+  if (data?.last_sent_at) {
+    const last = new Date(data.last_sent_at).getTime();
+    if (!Number.isNaN(last) && nowMs() - last < minutesToMs(suppressMinutes)) {
+      return { ok: false as const, reason: "suppressed" };
+    }
   }
 
-  // 送る：last_sent_at を更新
-  await supabase
+  // 送る（または初回）ので、last_sent_at を更新
+  const { error: upsertErr } = await supabase
     .from("alert_dedupe")
-    .upsert(
-      {
-        alert_key: params.dedupeKey,
-        last_sent_at: nowIso,
-        sent_count: nextCount,
-        last_subject: params.subject,
-        last_body: params.text.slice(0, 2000),
-        updated_at: nowIso,
-      },
-      { onConflict: "alert_key" }
-    );
+    .upsert({ signature, last_sent_at: new Date().toISOString() }, { onConflict: "signature" });
 
-  await sendAlertEmail(params.subject, params.text);
-  return { ok: true, sent: true, suppressed: false, dedupeMinutes: minutes };
+  if (upsertErr) {
+    // ここで失敗してもメール送信自体は続ける
+    return { ok: true as const, reason: "upsert_failed", detail: upsertErr.message };
+  }
+
+  return { ok: true as const, reason: "send" };
 }
 
-export async function POST(req: Request) {
-  const denied = requireCron(req);
-  if (denied) return denied;
+async function handleMonitor() {
+  const supabase = await getSupabaseAdmin();
 
-  const body: any = await req.json().catch(() => ({}));
-  const supabase = getSupabaseAdmin();
+  // ★ここはあなたのスキーマに合わせて「destinations」ではなく「destination」を使う
+  // 例：pending が過去時刻なのに残っている / needs_user_action / failed を拾う
+  const nowIso = new Date().toISOString();
+  const tenMinAgoIso = new Date(Date.now() - 10 * 60 * 1000).toISOString();
 
-  // 3) 「エラーレポート」モード（run_schedule.sh などからPOSTされる）
-  if (typeof body?.status === "number" && typeof body?.url === "string") {
-    const status = body.status;
-    const url = body.url;
-    const responseText = String(body?.responseText ?? "");
+  const items: string[] = [];
 
-    const subject = `[X-Threads] Cron error: ${status} (report)`;
-    const text =
-      `Cronが失敗しました。\n\n` +
-      `Status: ${status}\nURL: ${url}\n\n` +
-      `Response:\n${responseText}`;
-
-    // 同一内容キー（status+url+responseText）で抑制
-    const dedupeKey = `report:${sha256(`${status}|${url}|${responseText}`)}`;
-
-    const r = await sendAlertOnce(supabase, {
-      kind: "report",
-      subject,
-      text,
-      dedupeKey,
-    });
-
-    return NextResponse.json({ ok: true, mode: "error-report", ...r });
-  }
-
-  // 4) 「モニター」モード
-  try {
-    const now = Date.now();
-    const since15m = new Date(now - 15 * 60 * 1000).toISOString();
-    const before2m = new Date(now - 2 * 60 * 1000).toISOString();
-
-    // A) 直近15分で failed / auth_required
-    const badStatuses = ["failed", "auth_required"];
-    const bad = await supabase
+  // 1) 取りこぼし疑い（10分以上前の run_at なのに pending）
+  {
+    const { data, error } = await supabase
       .from("scheduled_posts")
-      .select("id, provider, status, run_at, updated_at, last_error, group_id")
-      .in("status", badStatuses)
-      .gte("updated_at", since15m)
-      .order("updated_at", { ascending: false })
-      .limit(20);
-
-    if (bad.error) {
-      return NextResponse.json(
-        { ok: false, mode: "monitor", error: bad.error.message },
-        { status: 500 }
-      );
-    }
-
-    // B) run_at を2分過ぎても pending のまま
-    const stuck = await supabase
-      .from("scheduled_posts")
-      .select("id, provider, status, run_at, updated_at, last_error, group_id")
+      .select("id, run_at, destination, text, status")
       .eq("status", "pending")
-      .lte("run_at", before2m)
+      .lt("run_at", tenMinAgoIso)
       .order("run_at", { ascending: true })
       .limit(20);
 
-    if (stuck.error) {
-      return NextResponse.json(
-        { ok: false, mode: "monitor", error: stuck.error.message },
-        { status: 500 }
-      );
-    }
-
-    const alerts: any[] = [];
-    if ((bad.data ?? []).length > 0) alerts.push({ type: "bad_status", rows: bad.data });
-    if ((stuck.data ?? []).length > 0) alerts.push({ type: "stuck_pending", rows: stuck.data });
-
-    if (alerts.length === 0) {
-      return NextResponse.json({ mode: "monitor", alerts: alerts.length, ...r });
-
-    }
-
-    // メール本文
-    const lines: string[] = [];
-    lines.push("モニターで異常を検知しました。\n");
-    for (const a of alerts) {
-      lines.push(a.type === "bad_status" ? "=== failed / auth_required (直近15分) ===" : "=== pending が2分以上残留 ===");
-      for (const r of a.rows) {
-        lines.push(
-          `- id=${r.id} provider=${r.provider} status=${r.status} run_at=${r.run_at} updated_at=${r.updated_at} group_id=${r.group_id ?? ""}`
-        );
-        if (r.last_error) lines.push(`  last_error=${String(r.last_error).slice(0, 300)}`);
+    if (error) throw new Error(`monitor pending query failed: ${error.message}`);
+    if (data && data.length > 0) {
+      items.push(`【遅延】pending が run_at から10分以上経過: ${data.length}件`);
+      for (const r of data) {
+        items.push(`- id=${r.id} dest=${r.destination} run_at=${r.run_at} text=${String(r.text || "").slice(0, 60)}`);
       }
-      lines.push("");
+    }
+  }
+
+  // 2) ユーザー対応待ち
+  {
+    const { data, error } = await supabase
+      .from("scheduled_posts")
+      .select("id, run_at, destination, text, status, user_action_required")
+      .or("status.eq.needs_user_action,user_action_required.eq.true")
+      .order("run_at", { ascending: true })
+      .limit(20);
+
+    if (error) throw new Error(`monitor needs_user_action query failed: ${error.message}`);
+    if (data && data.length > 0) {
+      items.push(`【要対応】needs_user_action / user_action_required: ${data.length}件`);
+      for (const r of data) {
+        items.push(`- id=${r.id} dest=${r.destination} run_at=${r.run_at} text=${String(r.text || "").slice(0, 60)}`);
+      }
+    }
+  }
+
+  // 3) failed
+  {
+    const { data, error } = await supabase
+      .from("scheduled_posts")
+      .select("id, run_at, destination, text, status, error")
+      .eq("status", "failed")
+      .order("run_at", { ascending: false })
+      .limit(20);
+
+    if (error) throw new Error(`monitor failed query failed: ${error.message}`);
+    if (data && data.length > 0) {
+      items.push(`【失敗】failed: ${data.length}件`);
+      for (const r of data) {
+        items.push(`- id=${r.id} dest=${r.destination} run_at=${r.run_at} err=${String(r.error || "").slice(0, 120)}`);
+      }
+    }
+  }
+
+  return { items, checkedAt: nowIso };
+}
+
+export async function POST(req: Request) {
+  // 1) 認証
+  const expected = process.env.CRON_SECRET || "";
+  const got = getBearer(req);
+  if (!expected || got !== expected) {
+    return json(401, { ok: false, error: "Unauthorized" });
+  }
+
+  // 2) 抑制時間（分）: 環境変数が無ければ 30分
+  const suppressMinutes = Number(process.env.ALERT_SUPPRESS_MINUTES || "30") || 30;
+
+  // 3) body があるなら「report」、無い/空なら「monitor」
+  let body: any = null;
+  try {
+    // Content-Length が 0 でも例外になることがあるので try
+    body = await req.json();
+  } catch {
+    body = null;
+  }
+
+  // ----------------------
+  // A) エラー報告モード（Oracle から status/url/responseText を投げるやつ）
+  // ----------------------
+  if (body && typeof body === "object" && typeof body.status === "number" && typeof body.url === "string") {
+    const b: ErrorReportBody = {
+      status: body.status,
+      url: body.url,
+      responseText: typeof body.responseText === "string" ? body.responseText : "",
+    };
+
+    const sigBase = normalizeForSignature(b);
+    const signature = sha256(`report:${sigBase}`);
+
+    const dedupe = await shouldSendByDedupe(signature, suppressMinutes);
+    if (!dedupe.ok) {
+      return json(200, { ok: true, mode: "error-report", suppressed: true, suppressMinutes });
     }
 
-    const subject = `[X-Threads] Monitor alert (${alerts.reduce((n, a) => n + a.rows.length, 0)})`;
-    const text = lines.join("\n");
+    const subject = buildSubject("report", String(b.status));
+    const text = buildEmailText("report", b);
 
-    // “同じアラート内容” を抑制（ids まで含めてハッシュ）
-    const dedupeKey = `monitor:${sha256(JSON.stringify(alerts))}`;
+    await sendAlertEmail(subject, text);
 
-    const r = await sendAlertOnce(supabase, {
-      kind: "monitor",
-      subject,
-      text,
-      dedupeKey,
-    });
+    return json(200, { ok: true, mode: "error-report", suppressed: false });
+  }
 
-    return NextResponse.json({ mode: "error-report", ...r });
+  // ----------------------
+  // B) モニターモード（5分おきに叩くやつ）
+  // ----------------------
+  try {
+    const result = await handleMonitor();
+    const hasAlerts = (result.items || []).length > 0;
+
+    if (!hasAlerts) {
+      return json(200, { ok: true, mode: "monitor", alerts: 0 });
+    }
+
+    // 同じ一覧が続く場合は抑制
+    const signature = sha256(`monitor:${result.items.join("\n")}`);
+
+    const dedupe = await shouldSendByDedupe(signature, suppressMinutes);
+    if (!dedupe.ok) {
+      return json(200, { ok: true, mode: "monitor", alerts: result.items.length, suppressed: true, suppressMinutes });
+    }
+
+    const subject = buildSubject("monitor", String(result.items.length));
+    const text = buildEmailText("monitor", result);
+
+    await sendAlertEmail(subject, text);
+
+    return json(200, { ok: true, mode: "monitor", alerts: result.items.length, suppressed: false });
   } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, mode: "monitor", error: String(e?.message ?? e) },
-      { status: 500 }
-    );
+    // monitor 側の処理が落ちたら、それ自体を「report」として送る（ただし抑制あり）
+    const b: ErrorReportBody = {
+      status: 500,
+      url: "/api/monitor/report (monitor)",
+      responseText: String(e?.message || e),
+    };
+    const signature = sha256(`report:${normalizeForSignature(b)}`);
+
+    const dedupe = await shouldSendByDedupe(signature, suppressMinutes);
+    if (dedupe.ok) {
+      const subject = buildSubject("report", "500");
+      const text = buildEmailText("report", b);
+      await sendAlertEmail(subject, text);
+    }
+
+    return json(200, { ok: false, mode: "monitor", error: String(e?.message || e) });
   }
 }
