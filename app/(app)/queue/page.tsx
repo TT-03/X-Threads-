@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
 
 type GroupStatus =
   | "pending"
@@ -68,8 +69,8 @@ function statusLabel(s: GroupStatus) {
   }
 }
 
-function badgeStyle(s: GroupStatus): React.CSSProperties {
-  const base: React.CSSProperties = {
+function badgeStyle(s: GroupStatus): CSSProperties {
+  const base: CSSProperties = {
     fontSize: 12,
     fontWeight: 700,
     padding: "4px 10px",
@@ -92,8 +93,8 @@ function badgeStyle(s: GroupStatus): React.CSSProperties {
   return base;
 }
 
-function cardStyle(s: GroupStatus): React.CSSProperties {
-  const base: React.CSSProperties = {
+function cardStyle(s: GroupStatus): CSSProperties {
+  const base: CSSProperties = {
     border: "1px solid #ddd",
     borderRadius: 12,
     padding: 12,
@@ -116,29 +117,80 @@ export default function QueuePage() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<FilterKey>("all");
 
-  // ✅ コピー通知
+  // コピー通知（右下トースト）
   const [copied, setCopied] = useState<string | null>(null);
 
-  // ✅ 自動更新（1分）
-  const [autoRefresh, setAutoRefresh] = useState(true);
+  // 自動更新（一覧の更新）
+  const [autoRefresh] = useState(true);
+
+  // 管理者モード + secret
   const [adminMode, setAdminMode] = useState(false);
   const [cronSecretCached, setCronSecretCached] = useState<string | null>(null);
-  const [autoRun, setAutoRun] = useState(true);   // ✅ 自動実行（1分）
-  const [isRunningNow, setIsRunningNow] = useState(false); // ✅ 二重実行防止
 
+  // 自動実行（/api/schedule/run を1分ごとに叩く）
+  const [autoRun, setAutoRun] = useState(true);
+  const [isRunningNow, setIsRunningNow] = useState(false); // 二重実行防止
+
+  // ---------- 共通：トースト表示 ----------
+  function toast(msg: string) {
+    setCopied(msg);
+    window.clearTimeout((toast as any)._t);
+    (toast as any)._t = window.setTimeout(() => setCopied(null), 3000);
+  }
+
+  // ---------- 管理者：secret 操作 ----------
+  function saveSecret() {
+    const input = window.prompt("CRON_SECRET を入力して保存します（タブを閉じるまで有効）");
+    if (!input) return;
+    sessionStorage.setItem("xthreads_cron_secret", input);
+    setCronSecretCached(input);
+    toast("CRON_SECRET を保存しました");
+  }
+
+  async function generateSecret() {
+    // ブラウザで新しいsecretを作る（Vercel/Oracleの更新は手動が必要）
+    const s =
+      (typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID().replaceAll("-", "")
+        : Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2));
+
+    sessionStorage.setItem("xthreads_cron_secret", s);
+    setCronSecretCached(s);
+
+    // ついでにコピーできたらコピー
+    try {
+      await navigator.clipboard.writeText(s);
+      toast("新secretを生成しました（コピー済み）※VercelとOracleも同じ値に更新してね");
+    } catch {
+      toast("新secretを生成しました ※VercelとOracleも同じ値に更新してね");
+    }
+  }
+
+  function deleteSecret() {
+    sessionStorage.removeItem("xthreads_cron_secret");
+    setCronSecretCached(null);
+    toast("secret を削除しました");
+  }
+
+  async function ensureSecret(): Promise<string | null> {
+    if (cronSecretCached) return cronSecretCached;
+    const input = window.prompt("CRON_SECRET を入力してください（管理者用）");
+    if (!input) return null;
+    sessionStorage.setItem("xthreads_cron_secret", input);
+    setCronSecretCached(input);
+    return input;
+  }
+
+  // ---------- API：一覧取得 ----------
   async function load() {
     setLoading(true);
     setError(null);
 
     try {
-      // ✅ group形式の一覧を取得
       const res = await fetch("/api/schedule/list", { cache: "no-store" });
       const json = await res.json().catch(() => ({}));
-
       if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
-
-      const next = (json.groups ?? []) as Group[];
-      setGroups(next);
+      setGroups((json.groups ?? []) as Group[]);
     } catch (e: any) {
       setError(String(e?.message ?? e));
       setGroups([]);
@@ -147,21 +199,14 @@ export default function QueuePage() {
     }
   }
 
-  // ✅ 今すぐ実行（/api/schedule/run を叩く）
+  // ---------- API：今すぐ実行 ----------
   async function runNow() {
     if (isRunningNow) return;
     setIsRunningNow(true);
 
     try {
-      let secret = cronSecretCached;
-
-      if (!secret) {
-        const input = window.prompt("CRON_SECRET を入力してください（管理者用）");
-        if (!input) return;
-        secret = input;
-        sessionStorage.setItem("xthreads_cron_secret", secret);
-        setCronSecretCached(secret);
-      }
+      const secret = await ensureSecret();
+      if (!secret) return;
 
       const res = await fetch("/api/schedule/run", {
         method: "GET",
@@ -173,18 +218,19 @@ export default function QueuePage() {
       if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
 
       await load();
-      setCopied(`実行しました：sent=${json?.sent ?? 0}, needs=${json?.needs_user_action ?? 0}`);
+      toast(`実行しました：sent=${json?.sent ?? 0}, needs=${json?.needs_user_action ?? 0}`);
     } catch (e: any) {
       setError(String(e?.message ?? e));
-    }finally {
-     setIsRunningNow(false);
+    } finally {
+      setIsRunningNow(false);
     }
   }
 
+  // ---------- 便利：コピー ----------
   async function copyText(text: string) {
     try {
       await navigator.clipboard.writeText(text);
-      setCopied("本文をコピーしました");
+      toast("コピーしました");
     } catch {
       try {
         const ta = document.createElement("textarea");
@@ -195,27 +241,20 @@ export default function QueuePage() {
         ta.select();
         document.execCommand("copy");
         document.body.removeChild(ta);
-        setCopied("本文をコピーしました");
+        toast("コピーしました");
       } catch {
-        setCopied("コピーに失敗しました（ブラウザ設定をご確認ください）");
+        toast("コピーに失敗しました（ブラウザ設定をご確認ください）");
       }
-    } finally {
-      window.clearTimeout((copyText as any)._t);
-      (copyText as any)._t = window.setTimeout(() => setCopied(null), 3000);
     }
   }
 
   function openThreads() {
-    // MVP：とりあえずThreadsのWebを開く（本文はコピーして貼り付け）
     window.open("https://www.threads.net/", "_blank", "noreferrer");
   }
 
   async function cancelGroup(g: Group) {
     try {
-      const payload = g.group_id
-        ? { group_id: g.group_id }
-        : { id: g.items?.[0]?.id }; // 古いデータ用
-
+      const payload = g.group_id ? { group_id: g.group_id } : { id: g.items?.[0]?.id };
       const res = await fetch("/api/schedule/cancel", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -234,8 +273,8 @@ export default function QueuePage() {
       const payload = g.group_id
         ? { group_id: g.group_id, provider: "threads" }
         : g.threads?.id
-        ? { id: g.threads.id }
-        : { id: g.items?.[0]?.id };
+          ? { id: g.threads.id }
+          : { id: g.items?.[0]?.id };
 
       const res = await fetch("/api/schedule/complete", {
         method: "POST",
@@ -252,22 +291,13 @@ export default function QueuePage() {
 
   // 初回ロード + secret復元
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      if (!alive) return;
-
-      const saved = sessionStorage.getItem("xthreads_cron_secret");
-      if (saved) setCronSecretCached(saved);
-
-      await load();
-    })();
-    return () => {
-      alive = false;
-    };
+    const saved = sessionStorage.getItem("xthreads_cron_secret");
+    if (saved) setCronSecretCached(saved);
+    load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 自動更新（1分ごとに一覧をリロード）
+  // 自動更新（1分ごとに一覧リロード）
   useEffect(() => {
     if (!autoRefresh) return;
     const id = setInterval(() => load(), 60_000);
@@ -275,7 +305,7 @@ export default function QueuePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRefresh]);
 
-  // ✅ 自動実行（管理者モードON & secret保存済み & autoRun ON のときだけ）
+  // 自動実行（管理者モードON & secret保存済み & autoRun ON のときだけ）
   useEffect(() => {
     if (!adminMode) return;
     if (!autoRun) return;
@@ -309,111 +339,92 @@ export default function QueuePage() {
     return groups;
   }, [groups, filter]);
 
+  const secretSaved = !!cronSecretCached;
+
   return (
     <main style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
         <div>
           <h1 style={{ fontSize: 24, fontWeight: 700 }}>Queue</h1>
-          <p style={{ opacity: 0.7 }}>
-            予約の状態を確認できます（Threadsは必要に応じて「要対応」になります）。
-          </p>
+          <p style={{ opacity: 0.7 }}>予約の状態を確認できます（Threadsは必要に応じて「要対応」になります）。</p>
         </div>
 
-        {/* ✅ 右上：今すぐ実行 + 自動更新 + 更新 */}
-<div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-  <label style={{ fontSize: 12, opacity: 0.85, display: "flex", alignItems: "center", gap: 6 }}>
-    <input type="checkbox" checked={adminMode} onChange={(e) => setAdminMode(e.target.checked)} />
-    管理者モード
-  </label>
+        {/* 右上：管理者＋実行＋更新 */}
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <label style={{ fontSize: 12, opacity: 0.85, display: "flex", alignItems: "center", gap: 6 }}>
+            <input type="checkbox" checked={adminMode} onChange={(e) => setAdminMode(e.target.checked)} />
+            管理者モード
+          </label>
 
-  {adminMode ? (
-    <>
-      <button
-        onClick={async () => {
-          const input = window.prompt("CRON_SECRET を入力して保存します（タブを閉じるまで有効）");
-          if (!input) return;
-          sessionStorage.setItem("xthreads_cron_secret", input);
-          setCronSecretCached(input);
-          setCopied("CRON_SECRET を保存しました");
-        }}
-        style={btnStyle(true)}
-      >
-        secret保存
-      </button>
+          {adminMode ? (
+            <>
+              <span style={{ fontSize: 12, opacity: 0.7 }}>
+                secret: {secretSaved ? "保存済み" : "未"}
+              </span>
 
-      <button
-        onClick={() => {
-          sessionStorage.removeItem("xthreads_cron_secret");
-          setCronSecretCached(null);
-          setCopied("secret を削除しました");
-        }}
-        style={btnStyle(false, true)}
-      >
-        secret削除
-      </button>
+              <button onClick={saveSecret} style={btnStyle(true)}>
+                secret保存
+              </button>
 
-      <button onClick={runNow} style={btnStyle(true)}>
-        今すぐ実行
-      </button>
-    </>
-  ) : null}
+              <button onClick={generateSecret} style={btnStyle(true)}>
+                secret生成
+              </button>
 
-<label style={{ fontSize: 12, opacity: 0.85, display: "flex", alignItems: "center", gap: 6 }}>
-  <input type="checkbox" checked={autoRun} onChange={(e) => setAutoRun(e.target.checked)} />
-  自動実行（1分）
-</label>
+              <button onClick={deleteSecret} style={btnStyle(false, true)}>
+                secret削除
+              </button>
 
-  <button
-    onClick={load}
-    disabled={loading}
-    aria-label="refresh"
-    title="更新"
-    style={{
-      border: "1px solid #ddd",
-      background: "#fff",
-      borderRadius: 999,
-      width: 36,
-      height: 36,
-      display: "inline-flex",
-      alignItems: "center",
-      justifyContent: "center",
-      cursor: loading ? "not-allowed" : "pointer",
-      opacity: loading ? 0.6 : 1,
-      fontWeight: 700,
-    }}
-  >
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="M20 12a8 8 0 1 1-2.34-5.66" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path
-        d="M20 4v6h-6"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  </button>
-</div>
+              <button onClick={runNow} style={btnStyle(true)} disabled={isRunningNow}>
+                今すぐ実行
+              </button>
+
+              {/* 自動実行は管理者モードの時だけ表示 */}
+              <label style={{ fontSize: 12, opacity: 0.85, display: "flex", alignItems: "center", gap: 6 }}>
+                <input type="checkbox" checked={autoRun} onChange={(e) => setAutoRun(e.target.checked)} />
+                自動実行（1分）
+              </label>
+            </>
+          ) : null}
+
+          <button
+            onClick={load}
+            disabled={loading}
+            aria-label="refresh"
+            title="更新"
+            style={{
+              border: "1px solid #ddd",
+              background: "#fff",
+              borderRadius: 999,
+              width: 36,
+              height: 36,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: loading ? "not-allowed" : "pointer",
+              opacity: loading ? 0.6 : 1,
+              fontWeight: 700,
+            }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M20 12a8 8 0 1 1-2.34-5.66" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              <path
+                d="M20 4v6h-6"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
       </div>
 
       {/* フィルタ */}
       <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
         <FilterButton active={filter === "all"} onClick={() => setFilter("all")} label={`All (${counts.all})`} />
-        <FilterButton
-          active={filter === "needs"}
-          onClick={() => setFilter("needs")}
-          label={`Needs Action (${counts.needs})`}
-        />
-        <FilterButton
-          active={filter === "pending"}
-          onClick={() => setFilter("pending")}
-          label={`Pending (${counts.pending})`}
-        />
-        <FilterButton
-          active={filter === "failed"}
-          onClick={() => setFilter("failed")}
-          label={`Failed (${counts.failed})`}
-        />
+        <FilterButton active={filter === "needs"} onClick={() => setFilter("needs")} label={`Needs Action (${counts.needs})`} />
+        <FilterButton active={filter === "pending"} onClick={() => setFilter("pending")} label={`Pending (${counts.pending})`} />
+        <FilterButton active={filter === "failed"} onClick={() => setFilter("failed")} label={`Failed (${counts.failed})`} />
         <FilterButton active={filter === "auth"} onClick={() => setFilter("auth")} label={`Auth (${counts.auth})`} />
       </div>
 
@@ -443,15 +454,14 @@ export default function QueuePage() {
           const xTweetUrl =
             g.x?.tweet_id && !isAuthRequired ? `https://x.com/i/web/status/${g.x.tweet_id}` : null;
 
-          // 表示用ID（group_idが無い古いデータにも対応）
           const idForDisplay = g.group_id ? `group:${g.group_id}` : `key:${g.group_key}`;
 
           const errText =
             g.group_status === "failed"
               ? short(g.items?.[0]?.last_error ?? "", 140)
               : g.group_status === "auth_required"
-              ? short(g.items?.[0]?.last_error ?? "", 80)
-              : "";
+                ? short(g.items?.[0]?.last_error ?? "", 80)
+                : "";
 
           return (
             <div key={g.group_key} style={cardStyle(g.group_status)}>
@@ -512,7 +522,7 @@ export default function QueuePage() {
                   <span>error: {errText}</span>
                 ) : null}
 
-                {/* Threads 要対応のときに出すボタン */}
+                {/* Threads 要対応 */}
                 {isNeeds ? (
                   <>
                     <button onClick={() => copyText(g.threads?.text ?? g.display_text)} style={btnStyle()}>
@@ -527,8 +537,10 @@ export default function QueuePage() {
                   </>
                 ) : null}
 
-                {/* キャンセル（グループ単位） */}
-                {g.group_status === "pending" || g.group_status === "running" || g.group_status === "needs_user_action" ? (
+                {/* キャンセル */}
+                {g.group_status === "pending" ||
+                g.group_status === "running" ||
+                g.group_status === "needs_user_action" ? (
                   <button onClick={() => cancelGroup(g)} style={btnStyle(false, true)}>
                     キャンセル
                   </button>
@@ -543,17 +555,17 @@ export default function QueuePage() {
             {filter === "all"
               ? "まだ予約がありません。"
               : filter === "needs"
-              ? "要対応（Threads）はありません。"
-              : filter === "pending"
-              ? "Pending はありません。"
-              : filter === "failed"
-              ? "Failed はありません。"
-              : "Auth Required はありません。"}
+                ? "要対応（Threads）はありません。"
+                : filter === "pending"
+                  ? "Pending はありません。"
+                  : filter === "failed"
+                    ? "Failed はありません。"
+                    : "Auth Required はありません。"}
           </div>
         ) : null}
       </div>
 
-      {/* ✅ 固定トースト（右下） */}
+      {/* 右下トースト */}
       {copied ? (
         <div
           style={{
@@ -570,9 +582,6 @@ export default function QueuePage() {
             display: "inline-flex",
             alignItems: "center",
             gap: 8,
-            transform: "translateY(0)",
-            opacity: 1,
-            transition: "opacity 160ms ease, transform 160ms ease",
           }}
           role="status"
           aria-live="polite"
@@ -585,7 +594,7 @@ export default function QueuePage() {
   );
 }
 
-function btnStyle(primary = false, danger = false): React.CSSProperties {
+function btnStyle(primary = false, danger = false): CSSProperties {
   return {
     border: "1px solid #ddd",
     background: primary ? "#111" : "#fff",
@@ -596,6 +605,7 @@ function btnStyle(primary = false, danger = false): React.CSSProperties {
     fontSize: 12,
     fontWeight: 700,
     cursor: "pointer",
+    opacity: 1,
   };
 }
 
