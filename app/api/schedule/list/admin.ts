@@ -1,8 +1,9 @@
 import { cookies } from "next/headers";
 
-// x_user_id(cookie)の値で管理者判定する版（外部ファイル不要）
+// x_user_id(cookie)の値で管理者判定（Next.js 16対応：cookies() は await が必要）
 export async function requireAdmin() {
-  const userId = cookies().get("x_user_id")?.value;
+  const cookieStore = await cookies();
+  const userId = cookieStore.get("x_user_id")?.value;
 
   if (!userId) {
     return { ok: false as const, status: 401, reason: "Missing x_user_id cookie" };
