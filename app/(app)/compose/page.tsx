@@ -310,7 +310,7 @@ export default function ComposePage() {
           </div>
         </div>
 
-{/* ✅ 追加：予約日時 */}
+{/* ✅ 予約日時 */}
 <div className="mt-3 rounded-2xl border bg-white p-3">
   <div className="text-xs font-semibold text-neutral-700">予約日時</div>
 
@@ -323,8 +323,6 @@ export default function ComposePage() {
       step={60}
     />
   </div>
-</div>
-  )}
 
   <div className="mt-2 text-xs text-neutral-500">※ 30秒以上先の日時にしてください</div>
 </div>
