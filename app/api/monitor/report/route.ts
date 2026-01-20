@@ -223,6 +223,26 @@ async function handleMonitor() {
     }
   }
 
+// 5) 想定外status（漏れ防止）
+{
+  const known = ["pending", "needs_user_action", "failed", "running", "sent"];
+  const { data, error } = await supabase
+    .from("scheduled_posts")
+    .select("*")
+    .not("status", "in", `(${known.map((s) => `"${s}"`).join(",")})`)
+    .order("updated_at", { ascending: false })
+    .limit(20);
+
+  if (error) throw new Error(`monitor unknown status query failed: ${error.message}`);
+
+  if (data && data.length > 0) {
+    items.push(`【要確認】想定外status: ${data.length}件`);
+    for (const r of data as any[]) {
+      items.push(`- id=${r?.id} provider=${pickProvider(r)} status=${r?.status} updated_at=${r?.updated_at}`);
+    }
+  }
+}
+
   return { items, checkedAt: nowIso };
 }
 
