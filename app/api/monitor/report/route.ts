@@ -91,6 +91,7 @@ async function shouldSendByDedupe(signature: string, suppressMinutes: number) {
     .eq("signature", signature)
     .maybeSingle();
 
+  // テーブル未作成などでも「とりあえず送れる」ように落とさない
   if (error) {
     return { ok: true as const, reason: "dedupe_table_error", detail: error.message };
   }
@@ -113,24 +114,29 @@ async function shouldSendByDedupe(signature: string, suppressMinutes: number) {
   return { ok: true as const, reason: "send" };
 }
 
-// ===== ここから monitor 安全版（列名ブレで落ちない） =====
+// ===== ここから monitor（scheduled_posts 実スキーマ対応） =====
+// scheduled_posts columns:
+// id, user_id, provider, text, run_at, status, attempts, last_error, tweet_id,
+// created_at, updated_at, group_id, draft_id, provider_post_id, target_url
 
-function pickDestLike(r: any) {
-  return r?.destination ?? r?.destinations ?? r?.provider ?? r?.platform ?? "(unknown)";
+function pickProvider(r: any) {
+  return r?.provider ?? "(unknown)";
 }
 
-function pickErrorLike(r: any) {
-  return r?.last_error ?? r?.error ?? r?.message ?? r?.responseText ?? "";
+function pickLastError(r: any) {
+  return r?.last_error ?? "";
 }
 
 async function handleMonitor() {
   const supabase = await getSupabaseAdmin();
 
-  // 監視しきい値（分）：必要ならVercelの環境変数で調整
+  // 監視しきい値（分）：Vercel環境変数で調整
   const PENDING_STALE_MINUTES = Number(process.env.MONITOR_PENDING_STALE_MINUTES || "10") || 10;
+  const RUNNING_STALE_MINUTES = Number(process.env.MONITOR_RUNNING_STALE_MINUTES || "30") || 30;
 
   const now = Date.now();
-  const cutoffIso = new Date(now - PENDING_STALE_MINUTES * 60 * 1000).toISOString();
+  const pendingCutoffIso = new Date(now - PENDING_STALE_MINUTES * 60 * 1000).toISOString();
+  const runningCutoffIso = new Date(now - RUNNING_STALE_MINUTES * 60 * 1000).toISOString();
   const nowIso = new Date().toISOString();
 
   const items: string[] = [];
@@ -139,9 +145,9 @@ async function handleMonitor() {
   {
     const { data, error } = await supabase
       .from("scheduled_posts")
-      .select("*") // ←列名指定しない
+      .select("*")
       .eq("status", "pending")
-      .lt("run_at", cutoffIso)
+      .lt("run_at", pendingCutoffIso)
       .order("run_at", { ascending: true })
       .limit(20);
 
@@ -151,7 +157,7 @@ async function handleMonitor() {
       items.push(`【遅延】pending が run_at から${PENDING_STALE_MINUTES}分以上経過: ${data.length}件`);
       for (const r of data as any[]) {
         const text = String(r?.text || "").slice(0, 60);
-        items.push(`- id=${r?.id} dest=${pickDestLike(r)} run_at=${r?.run_at} text=${text}`);
+        items.push(`- id=${r?.id} provider=${pickProvider(r)} run_at=${r?.run_at} text=${text}`);
       }
     }
   }
@@ -160,7 +166,7 @@ async function handleMonitor() {
   {
     const { data, error } = await supabase
       .from("scheduled_posts")
-      .select("*") // ←列名指定しない
+      .select("*")
       .eq("status", "needs_user_action")
       .order("run_at", { ascending: true })
       .limit(20);
@@ -171,16 +177,16 @@ async function handleMonitor() {
       items.push(`【要対応】needs_user_action: ${data.length}件`);
       for (const r of data as any[]) {
         const text = String(r?.text || "").slice(0, 60);
-        items.push(`- id=${r?.id} dest=${pickDestLike(r)} run_at=${r?.run_at} text=${text}`);
+        items.push(`- id=${r?.id} provider=${pickProvider(r)} run_at=${r?.run_at} text=${text}`);
       }
     }
   }
 
-  // 3) failed
+  // 3) failed（last_error を表示）
   {
     const { data, error } = await supabase
       .from("scheduled_posts")
-      .select("*") // ←列名指定しない
+      .select("*")
       .eq("status", "failed")
       .order("run_at", { ascending: false })
       .limit(20);
@@ -190,8 +196,29 @@ async function handleMonitor() {
     if (data && data.length > 0) {
       items.push(`【失敗】failed: ${data.length}件`);
       for (const r of data as any[]) {
-        const err = String(pickErrorLike(r)).slice(0, 140);
-        items.push(`- id=${r?.id} dest=${pickDestLike(r)} run_at=${r?.run_at} err=${err}`);
+        const err = String(pickLastError(r)).slice(0, 140);
+        items.push(`- id=${r?.id} provider=${pickProvider(r)} run_at=${r?.run_at} err=${err}`);
+      }
+    }
+  }
+
+  // 4) running が固まってる疑い（updated_at が一定時間更新されていない）
+  {
+    const { data, error } = await supabase
+      .from("scheduled_posts")
+      .select("*")
+      .eq("status", "running")
+      .lt("updated_at", runningCutoffIso)
+      .order("updated_at", { ascending: true })
+      .limit(20);
+
+    if (error) throw new Error(`monitor running query failed: ${error.message}`);
+
+    if (data && data.length > 0) {
+      items.push(`【停滞】running が updated_at から${RUNNING_STALE_MINUTES}分以上更新なし: ${data.length}件`);
+      for (const r of data as any[]) {
+        const text = String(r?.text || "").slice(0, 60);
+        items.push(`- id=${r?.id} provider=${pickProvider(r)} updated_at=${r?.updated_at} text=${text}`);
       }
     }
   }
@@ -220,7 +247,9 @@ export async function POST(req: Request) {
     body = null;
   }
 
-  // A) エラー報告モード
+  // ----------------------
+  // A) エラー報告モード（Oracleが status/url/responseText を投げる）
+  // ----------------------
   if (body && typeof body === "object" && typeof body.status === "number" && typeof body.url === "string") {
     const b: ErrorReportBody = {
       status: body.status,
@@ -237,12 +266,15 @@ export async function POST(req: Request) {
 
     const subject = buildSubject("report", String(b.status));
     const text = buildEmailText("report", b);
+
     await sendAlertEmail(subject, text);
 
     return json(200, { ok: true, mode: "error-report", suppressed: false });
   }
 
-  // B) モニターモード（5分おき）
+  // ----------------------
+  // B) モニターモード（5分おきに叩くやつ）
+  // ----------------------
   try {
     const result = await handleMonitor();
     const hasAlerts = (result.items || []).length > 0;
@@ -251,6 +283,7 @@ export async function POST(req: Request) {
       return json(200, { ok: true, mode: "monitor", alerts: 0 });
     }
 
+    // 同じ一覧が続く場合は抑制
     const signature = sha256(`monitor:${result.items.join("\n")}`);
 
     const dedupe = await shouldSendByDedupe(signature, suppressMinutes);
@@ -266,10 +299,12 @@ export async function POST(req: Request) {
 
     const subject = buildSubject("monitor", String(result.items.length));
     const text = buildEmailText("monitor", result);
+
     await sendAlertEmail(subject, text);
 
     return json(200, { ok: true, mode: "monitor", alerts: result.items.length, suppressed: false });
   } catch (e: any) {
+    // monitor 側の処理が落ちたら、それ自体を「report」として送る（ただし抑制あり）
     const b: ErrorReportBody = {
       status: 500,
       url: "/api/monitor/report (monitor)",
@@ -284,6 +319,7 @@ export async function POST(req: Request) {
       await sendAlertEmail(subject, text);
     }
 
+    // 監視の呼び出し自体は 200 で返す（cron側が「APIが落ちた」と誤判定しないため）
     return json(200, { ok: false, mode: "monitor", error: String(e?.message || e) });
   }
 }
