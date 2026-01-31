@@ -388,7 +388,26 @@ async function runOnce() {
       }
 
       // 投稿
-      r = await postToX(conn.x_access_token, job.text);
+const accessToken = conn.x_access_token;
+
+if (!accessToken) {
+  const errMsg = "X is not connected for this user (missing x_access_token).";
+  await supabase
+    .from("scheduled_posts")
+    .update({
+      status: "needs_user_action",
+      attempts: (job.attempts ?? 0) + 1,
+      last_error: errMsg,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", job.id);
+
+  needsUserAction++;
+  results.push({ id: job.id, action: "needs_user_action", error: errMsg });
+  continue;
+}
+
+r = await postToX(accessToken, job.text);
 
       // 401ならrefresh→再投稿（1回だけ）
       if (!r.ok && r.status === 401) {
@@ -485,14 +504,18 @@ async function runOnce() {
 
         // 再投稿（1回だけ）
 const accessToken = conn.x_access_token;
+
 if (!accessToken) {
   const errMsg = "X is not connected for this user (missing x_access_token).";
-  await supabase.from("scheduled_posts").update({
-    status: "needs_user_action",
-    attempts: (job.attempts ?? 0) + 1,
-    last_error: errMsg,
-    updated_at: new Date().toISOString(),
-  }).eq("id", job.id);
+  await supabase
+    .from("scheduled_posts")
+    .update({
+      status: "needs_user_action",
+      attempts: (job.attempts ?? 0) + 1,
+      last_error: errMsg,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", job.id);
 
   needsUserAction++;
   results.push({ id: job.id, action: "needs_user_action", error: errMsg });
