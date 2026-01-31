@@ -1,57 +1,61 @@
-import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+// app/api/x/disconnect/route.ts
+import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
 function getSupabaseAdmin() {
   const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  if (!url || !key) {
+  if (!url || !serviceKey) {
     throw new Error("Missing env: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY");
   }
 
-  return createClient(url, key, {
-    auth: { persistSession: false },
+  return createClient(url, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
   });
 }
 
-async function readUserId(req: Request): Promise<string | null> {
-  // 1) Cookie 優先
-  const ck = await cookies();
-  const fromCookie = ck.get("x_user_id")?.value;
-  if (fromCookie) return fromCookie;
+function clearAuthCookies(res: NextResponse) {
+  const opts = { path: "/", maxAge: 0 };
 
-  // 2) 念のため body(JSON) も見る（空のPOSTでもOKにする）
-  try {
-    const body = await req.json().catch(() => null);
-    const fromBody = body?.user_id || body?.userId;
-    if (typeof fromBody === "string" && fromBody.length > 0) return fromBody;
-  } catch {
-    // ignore
-  }
+  res.cookies.set("x_access_token", "", opts);
+  res.cookies.set("x_refresh_token", "", opts);
+  res.cookies.set("x_user_id", "", opts);
+  res.cookies.set("x_username", "", opts);
+  res.cookies.set("x_connected", "", opts);
 
-  return null;
+  // OAuth startで使ってる場合があるので念のため
+  res.cookies.set("x_oauth_state", "", opts);
+  res.cookies.set("x_pkce_verifier", "", opts);
 }
 
-export async function POST(req: Request) {
-  let userId: string | null = null;
+export async function POST(req: NextRequest) {
+  // 1) user_id を cookie or body から取得
+  const cookieUserId = req.cookies.get("x_user_id")?.value;
 
+  let bodyUserId: string | undefined;
   try {
-    userId = await readUserId(req);
+    const body = await req.json().catch(() => null);
+    if (body && typeof body.user_id === "string") bodyUserId = body.user_id;
+  } catch {
+    // bodyなしでもOK
+  }
 
-    if (!userId) {
-      return NextResponse.json(
-        { ok: false, error: "missing user_id (cookie x_user_id not found)" },
-        { status: 400 }
-      );
-    }
+  const userId = cookieUserId || bodyUserId;
+  if (!userId) {
+    return NextResponse.json(
+      { ok: false, error: "Missing user_id (cookie x_user_id or body.user_id)" },
+      { status: 400 }
+    );
+  }
 
-    const supabaseAdmin = getSupabaseAdmin();
+  // 2) DB: x_connections の token を確実に消す（NULLにする）
+  try {
+    const supabase = getSupabaseAdmin();
 
-    // ✅ x_connections のトークンを NULL にする（=連携解除）
-    const { error } = await supabaseAdmin
+    const { error } = await supabase
       .from("x_connections")
       .update({
         x_access_token: null,
@@ -62,36 +66,19 @@ export async function POST(req: Request) {
       .eq("user_id", userId);
 
     if (error) {
+      console.error("disconnect: failed to update x_connections:", error);
       return NextResponse.json(
-        { ok: false, error: "failed to update x_connections", details: error },
+        { ok: false, error: "Failed to update x_connections", details: error },
         { status: 500 }
       );
     }
 
+    // 3) Cookie を確実に消す
     const res = NextResponse.json({ ok: true, disconnected: true, user_id: userId });
-
-    // ✅ Cookieも削除（UIの表示や誤判定防止）
-    const clear = (name: string) => {
-      res.cookies.set({
-        name,
-        value: "",
-        path: "/",
-        maxAge: 0,
-      });
-    };
-
-    clear("x_access_token");
-    clear("x_refresh_token");
-    clear("x_user_id");
-    clear("x_username");
-    clear("x_connected");
-
-    // OAuth時に使ったものも一応消す
-    clear("x_oauth_state");
-    clear("x_pkce_verifier");
-
+    clearAuthCookies(res);
     return res;
   } catch (e: any) {
+    console.error("disconnect: exception:", e);
     return NextResponse.json(
       { ok: false, error: "disconnect exception", details: String(e?.message ?? e) },
       { status: 500 }
