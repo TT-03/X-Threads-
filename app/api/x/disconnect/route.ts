@@ -6,14 +6,12 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function clearClientCookies(res: NextResponse) {
-  // 画面側で使っている Cookie を全部消す
   const names = [
     "x_access_token",
     "x_refresh_token",
     "x_user_id",
     "x_username",
     "x_connected",
-    // OAuth開始時に作っている可能性があるものも念のため
     "x_pkce_verifier",
     "x_oauth_state",
   ];
@@ -24,25 +22,26 @@ function clearClientCookies(res: NextResponse) {
 }
 
 export async function POST(req: Request) {
+  // ✅ Next.jsのcookies()はPromiseになることがあるので await 必須
+  const ck = await cookies();
+
   // Cookie から user_id を取る（なければ body からも拾えるようにしておく）
-  const ck = cookies();
   let userId = ck.get("x_user_id")?.value ?? "";
 
   if (!userId) {
-    // body が空の POST もあるので try/catch
     try {
       const body = await req.json();
       userId = typeof body?.user_id === "string" ? body.user_id : "";
     } catch {
-      // noop
+      // bodyなしでもOK
     }
   }
 
+  // 先に Cookie は必ず消す（DBエラーでも画面側は解除状態に戻す）
   const resOk = NextResponse.json({ ok: true, user_id: userId || null });
-  // 先に Cookie は必ず消す（DB エラーでも「解除ボタン」は体感的に成功にしたい）
   clearClientCookies(resOk);
 
-  // user_id が取れないなら、Cookie だけ消して終了
+  // user_id が取れないなら Cookie だけ消して終了
   if (!userId) {
     return resOk;
   }
@@ -58,8 +57,7 @@ export async function POST(req: Request) {
   const supabase = getSupabaseAdmin();
   const now = new Date().toISOString();
 
-  // ✅ Supabase 側の接続情報を「未連携状態」に戻す
-  // ※ テーブル定義に合わせて x_access_token / x_refresh_token / x_expires_at を NULL にする
+  // ✅ DBの接続情報を未連携状態に戻す
   const { data, error } = await supabase
     .from("x_connections")
     .update({
@@ -73,7 +71,6 @@ export async function POST(req: Request) {
     .maybeSingle();
 
   if (error) {
-    // Cookie は消えているので、DB だけ失敗したことがわかるレスポンスにする
     const resNg = NextResponse.json(
       { ok: false, user_id: userId, error: "Failed to update x_connections", details: error },
       { status: 500 }
@@ -82,11 +79,10 @@ export async function POST(req: Request) {
     return resNg;
   }
 
-  // 更新対象が無いケースでも ok:true 扱い（「解除」は成立）
   const res = NextResponse.json({
     ok: true,
     user_id: userId,
-    db_cleared: !!data,
+    db_cleared: !!data, // 対象行がなくても解除は成立
   });
   clearClientCookies(res);
   return res;
