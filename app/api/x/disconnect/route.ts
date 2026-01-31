@@ -1,84 +1,99 @@
-// app/api/x/disconnect/route.ts
 import { NextResponse } from "next/server";
-import { getCookie, clearCookie } from "../../../_lib/cookies";
-import { getSupabaseAdmin } from "../../../_lib/supabaseAdmin";
+import { cookies } from "next/headers";
+import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
-export async function POST(req: Request) {
+function getSupabaseAdmin() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !key) {
+    throw new Error("Missing env: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY");
+  }
+
+  return createClient(url, key, {
+    auth: { persistSession: false },
+  });
+}
+
+async function readUserId(req: Request): Promise<string | null> {
+  // 1) Cookie 優先
+  const ck = await cookies();
+  const fromCookie = ck.get("x_user_id")?.value;
+  if (fromCookie) return fromCookie;
+
+  // 2) 念のため body(JSON) も見る（空のPOSTでもOKにする）
   try {
-    // まず Cookie から user_id を取る（UIはこれを持ってる前提）
-    let userId = await getCookie("x_user_id");
+    const body = await req.json().catch(() => null);
+    const fromBody = body?.user_id || body?.userId;
+    if (typeof fromBody === "string" && fromBody.length > 0) return fromBody;
+  } catch {
+    // ignore
+  }
 
-    // Cookie に無い場合は body から拾えるようにしておく（保険）
+  return null;
+}
+
+export async function POST(req: Request) {
+  let userId: string | null = null;
+
+  try {
+    userId = await readUserId(req);
+
     if (!userId) {
-      try {
-        const body = await req.json().catch(() => null);
-        if (body?.user_id) userId = String(body.user_id);
-      } catch {
-        // ignore
-      }
-    }
-
-    if (!userId) {
-      // Cookie も body も無いなら「cookie削除だけ」して返す
-      await Promise.all([
-        clearCookie("x_access_token"),
-        clearCookie("x_refresh_token"),
-        clearCookie("x_user_id"),
-        clearCookie("x_username"),
-        clearCookie("x_connected"),
-        clearCookie("x_oauth_state"),
-        clearCookie("x_pkce_verifier"),
-      ]);
-
       return NextResponse.json(
-        { ok: true, disconnected: true, user_id: null, note: "no user_id; cookies cleared only" },
-        { status: 200 }
+        { ok: false, error: "missing user_id (cookie x_user_id not found)" },
+        { status: 400 }
       );
     }
 
     const supabaseAdmin = getSupabaseAdmin();
 
-    // 1) まず「行ごと削除」を試す（UIが“行の存在”で連携判定してても確実に未連携になる）
-    const del = await supabaseAdmin.from("x_connections").delete().eq("user_id", userId);
+    // ✅ x_connections のトークンを NULL にする（=連携解除）
+    const { error } = await supabaseAdmin
+      .from("x_connections")
+      .update({
+        x_access_token: null,
+        x_refresh_token: null,
+        x_expires_at: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("user_id", userId);
 
-    // delete が権限/制約で失敗した場合は 2) NULL更新でフォールバック
-    if (del.error) {
-      const upd = await supabaseAdmin
-        .from("x_connections")
-        .update({
-          x_access_token: null,
-          x_refresh_token: null,
-          x_expires_at: null,
-          x_scopes: null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("user_id", userId);
-
-      if (upd.error) {
-        return NextResponse.json(
-          { ok: false, error: "Failed to disconnect", details: { delete_error: del.error, update_error: upd.error } },
-          { status: 500 }
-        );
-      }
+    if (error) {
+      return NextResponse.json(
+        { ok: false, error: "failed to update x_connections", details: error },
+        { status: 500 }
+      );
     }
 
-    // 3) Cookie は必ず消す（UI側の表示・APIの誤判定防止）
-    await Promise.all([
-      clearCookie("x_access_token"),
-      clearCookie("x_refresh_token"),
-      clearCookie("x_user_id"),
-      clearCookie("x_username"),
-      clearCookie("x_connected"),
-      clearCookie("x_oauth_state"),
-      clearCookie("x_pkce_verifier"),
-    ]);
+    const res = NextResponse.json({ ok: true, disconnected: true, user_id: userId });
 
-    return NextResponse.json({ ok: true, disconnected: true, user_id: userId }, { status: 200 });
+    // ✅ Cookieも削除（UIの表示や誤判定防止）
+    const clear = (name: string) => {
+      res.cookies.set({
+        name,
+        value: "",
+        path: "/",
+        maxAge: 0,
+      });
+    };
+
+    clear("x_access_token");
+    clear("x_refresh_token");
+    clear("x_user_id");
+    clear("x_username");
+    clear("x_connected");
+
+    // OAuth時に使ったものも一応消す
+    clear("x_oauth_state");
+    clear("x_pkce_verifier");
+
+    return res;
   } catch (e: any) {
     return NextResponse.json(
-      { ok: false, error: "Unhandled error", details: String(e?.message ?? e) },
+      { ok: false, error: "disconnect exception", details: String(e?.message ?? e) },
       { status: 500 }
     );
   }
