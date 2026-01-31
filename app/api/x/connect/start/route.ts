@@ -19,9 +19,21 @@ function sha256(verifier: string) {
   return crypto.createHash("sha256").update(verifier).digest();
 }
 
+function buildRedirectUri() {
+  // 優先: X_REDIRECT_URI（推奨）
+  if (process.env.X_REDIRECT_URI) return process.env.X_REDIRECT_URI;
+
+  // 互換: 以前の名前
+  if (process.env.X_CALLBACK_URL) return process.env.X_CALLBACK_URL;
+
+  // 最終手段: NEXT_PUBLIC_APP_URL から組み立て（/api/auth/x/callback に統一）
+  const base = process.env.NEXT_PUBLIC_APP_URL;
+  if (base) return `${base.replace(/\/$/, "")}/api/auth/x/callback`;
+
+  return "";
+}
+
 export async function POST(req: Request) {
-  // ここは「ログイン済み user_id」を受け取る想定（MVP）
-  // 実運用ではSupabase AuthのJWT検証に置き換えてください。
   const body = await req.json();
   const user_id = String(body.user_id || "");
   const x_client_id = String(body.x_client_id || "");
@@ -30,6 +42,18 @@ export async function POST(req: Request) {
 
   if (!user_id || !x_client_id || !x_client_secret) {
     return NextResponse.json({ ok: false, error: "missing params" }, { status: 400 });
+  }
+
+  const redirect_uri = buildRedirectUri();
+  if (!redirect_uri) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "missing redirect uri. Set X_REDIRECT_URI (recommended) or X_CALLBACK_URL or NEXT_PUBLIC_APP_URL",
+      },
+      { status: 500 }
+    );
   }
 
   const supabase = getSupabaseAdmin();
@@ -57,7 +81,6 @@ export async function POST(req: Request) {
     code_verifier,
   });
 
-  const redirect_uri = process.env.X_CALLBACK_URL!;
   const authorizeUrl =
     "https://twitter.com/i/oauth2/authorize" +
     `?response_type=code` +
