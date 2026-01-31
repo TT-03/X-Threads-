@@ -1,86 +1,84 @@
+// app/api/x/disconnect/route.ts
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { getSupabaseAdmin } from "../../_lib/supabaseAdmin";
+import { getCookie, clearCookie } from "../../../_lib/cookies";
+import { getSupabaseAdmin } from "../../../_lib/supabaseAdmin";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
-/**
- * cookie を確実に削除する（Max-Age=0）
- * ※あなたの既存レスポンスヘッダが HttpOnly なしだったので、挙動を変えないため httpOnly は付けません
- *   （セキュリティ改善したい場合は access/refresh だけ HttpOnly にするのがおすすめ）
- */
-function clearCookie(res: NextResponse, name: string) {
-  res.cookies.set({
-    name,
-    value: "",
-    path: "/",
-    maxAge: 0,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    // httpOnly: false（既存の挙動維持）
-  });
-}
 
 export async function POST(req: Request) {
   try {
-    // Next.js 16系：cookies() は Promise のため await 必須
-    const ck = await cookies();
+    // まず Cookie から user_id を取る（UIはこれを持ってる前提）
+    let userId = await getCookie("x_user_id");
 
-    // 基本は cookie の user_id で判定（フロントが body を送らない構成でも動く）
-    let userId = ck.get("x_user_id")?.value ?? "";
-
-    // 念のため body も見に行く（将来フロントが userId を送ってきても動く）
+    // Cookie に無い場合は body から拾えるようにしておく（保険）
     if (!userId) {
       try {
-        const body = await req.json();
-        if (typeof body?.user_id === "string") userId = body.user_id;
+        const body = await req.json().catch(() => null);
+        if (body?.user_id) userId = String(body.user_id);
       } catch {
-        // content-length:0 のPOSTなどはここに来る。無視でOK
+        // ignore
       }
     }
 
-    // 先にレスポンスを作る（cookie削除は常に実施）
-    const res = NextResponse.json({
-      ok: true,
-      disconnected: true,
-      user_id: userId || null,
-    });
+    if (!userId) {
+      // Cookie も body も無いなら「cookie削除だけ」して返す
+      await Promise.all([
+        clearCookie("x_access_token"),
+        clearCookie("x_refresh_token"),
+        clearCookie("x_user_id"),
+        clearCookie("x_username"),
+        clearCookie("x_connected"),
+        clearCookie("x_oauth_state"),
+        clearCookie("x_pkce_verifier"),
+      ]);
 
-    // UI/セッション系 cookie を削除（あなたのヘッダに出ていたもの一式）
-    clearCookie(res, "x_access_token");
-    clearCookie(res, "x_refresh_token");
-    clearCookie(res, "x_user_id");
-    clearCookie(res, "x_username");
-    clearCookie(res, "x_connected");
+      return NextResponse.json(
+        { ok: true, disconnected: true, user_id: null, note: "no user_id; cookies cleared only" },
+        { status: 200 }
+      );
+    }
 
-    // DB 更新（user_id が取れた時だけ）
-    if (userId) {
-      const supabase = getSupabaseAdmin();
+    const supabaseAdmin = getSupabaseAdmin();
 
-      const { error } = await supabase
+    // 1) まず「行ごと削除」を試す（UIが“行の存在”で連携判定してても確実に未連携になる）
+    const del = await supabaseAdmin.from("x_connections").delete().eq("user_id", userId);
+
+    // delete が権限/制約で失敗した場合は 2) NULL更新でフォールバック
+    if (del.error) {
+      const upd = await supabaseAdmin
         .from("x_connections")
         .update({
           x_access_token: null,
           x_refresh_token: null,
           x_expires_at: null,
+          x_scopes: null,
           updated_at: new Date().toISOString(),
         })
         .eq("user_id", userId);
 
-      // 失敗しても cookie は消えているので、情報だけ返す（運用でログ見たいなら console.error 推奨）
-      if (error) {
+      if (upd.error) {
         return NextResponse.json(
-          { ok: false, error: "DB update failed", details: error },
+          { ok: false, error: "Failed to disconnect", details: { delete_error: del.error, update_error: upd.error } },
           { status: 500 }
         );
       }
     }
 
-    return res;
+    // 3) Cookie は必ず消す（UI側の表示・APIの誤判定防止）
+    await Promise.all([
+      clearCookie("x_access_token"),
+      clearCookie("x_refresh_token"),
+      clearCookie("x_user_id"),
+      clearCookie("x_username"),
+      clearCookie("x_connected"),
+      clearCookie("x_oauth_state"),
+      clearCookie("x_pkce_verifier"),
+    ]);
+
+    return NextResponse.json({ ok: true, disconnected: true, user_id: userId }, { status: 200 });
   } catch (e: any) {
     return NextResponse.json(
-      { ok: false, error: "disconnect failed", details: String(e?.message ?? e) },
+      { ok: false, error: "Unhandled error", details: String(e?.message ?? e) },
       { status: 500 }
     );
   }
