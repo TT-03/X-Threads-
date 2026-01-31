@@ -1,99 +1,121 @@
-import { NextResponse } from "next/server";
-import { getCookie, clearCookie } from "../../../_lib/cookies";
-import { getSupabaseAdmin } from "../../../_lib/supabaseAdmin";
+import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-function jsonOk(payload: any, status = 200) {
-  return NextResponse.json(payload, { status });
-}
+function getSupabaseAdmin() {
+  const url = process.env.SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-export async function POST(req: Request) {
-  // 1) user_id は Cookie 優先（なければ body / query も許可）
-  const url = new URL(req.url);
-
-  const cookieUserId = await getCookie("x_user_id");
-  const queryUserId = url.searchParams.get("user_id") ?? undefined;
-
-  let bodyUserId: string | undefined;
-  try {
-    const ct = req.headers.get("content-type") || "";
-    if (ct.includes("application/json")) {
-      const body = await req.json().catch(() => null);
-      if (body && typeof body.user_id === "string") bodyUserId = body.user_id;
-    }
-  } catch {
-    // ignore
+  if (!url || !serviceKey) {
+    throw new Error("Missing env: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY");
   }
 
-  const userId = cookieUserId || bodyUserId || queryUserId || "";
+  return createClient(url, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { fetch },
+  });
+}
 
-  // 2) まず Cookie は必ず消す（DB更新に失敗しても UI を未連携に寄せる）
-  // あなたのレスポンスで見えていた Cookie を中心にクリア
-  await clearCookie("x_access_token");
-  await clearCookie("x_refresh_token");
-  await clearCookie("x_user_id");
-  await clearCookie("x_username");
-  await clearCookie("x_connected");
-  await clearCookie("x_scopes");
-  await clearCookie("x_expires_at");
+function clearAuthCookies(res: NextResponse) {
+  const names = [
+    "x_access_token",
+    "x_refresh_token",
+    "x_user_id",
+    "x_username",
+    "x_connected",
+  ];
 
-  // user_id が取れない場合でも、Cookieは消せたのでOKで返す
-  if (!userId) {
-    return jsonOk({ ok: true, disconnected: true, user_id: null, note: "no user_id; cookies cleared only" });
-    }
+  for (const name of names) {
+    res.cookies.set({
+      name,
+      value: "",
+      maxAge: 0,
+      path: "/",
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+    });
+  }
+}
 
-  // 3) DB も消す（x_tokens を優先で削除、x_connections も未連携状態へ）
+export async function POST(req: NextRequest) {
   try {
-    const supabaseAdmin = getSupabaseAdmin();
+    // 1) user_id を Cookie優先で取得（なければ body も見る）
+    const fromCookie = req.cookies.get("x_user_id")?.value;
 
-    // (a) x_tokens を削除（これが今の実体）
-    const { error: delTokensErr } = await supabaseAdmin
-      .from("x_tokens")
-      .delete()
-      .eq("user_id", userId);
-
-    if (delTokensErr) {
-      // x_tokens が無い/権限などもあり得るので、ログ用に返す
-      // ただし Cookie は消してるので disconnected は true のまま返す
-      return jsonOk({
-        ok: false,
-        disconnected: true,
-        user_id: userId,
-        warning: "failed to delete x_tokens",
-        details: delTokensErr,
-      }, 200);
+    let fromBody: string | undefined;
+    try {
+      const body = await req.json().catch(() => null);
+      fromBody = body?.user_id || body?.userId || body?.uid;
+    } catch {
+      // body無しでもOK
     }
 
-    // (b) x_connections も「未連携」へ（UIがこっちを見てる場合の対策）
-    // カラムが nullable 前提。nullable でなければ '' にする必要があるかも。
-    const { error: updConnErr } = await supabaseAdmin
+    const userId = fromCookie || fromBody;
+
+    if (!userId) {
+      const res = NextResponse.json(
+        { ok: false, error: "Missing user_id (cookie x_user_id or body.user_id)" },
+        { status: 400 }
+      );
+      clearAuthCookies(res);
+      return res;
+    }
+
+    // 2) DB 側のトークンを確実に無効化
+    const supabase = getSupabaseAdmin();
+    const now = new Date().toISOString();
+
+    // x_connections：トークン列をNULLに
+    const { error: connErr } = await supabase
       .from("x_connections")
       .update({
         x_access_token: null,
         x_refresh_token: null,
         x_expires_at: null,
-        x_scopes: null,
-        updated_at: new Date().toISOString(),
+        updated_at: now,
       })
       .eq("user_id", userId);
 
-    // x_connections が無い/使ってない構成でもあり得るので、ここは警告扱い
-    if (updConnErr) {
-      return jsonOk({
-        ok: true,
-        disconnected: true,
-        user_id: userId,
-        warning: "x_tokens deleted but failed to update x_connections",
-        details: updConnErr,
-      });
+    if (connErr) {
+      // ここで止めるとCookieが残るので、Cookieは必ず消して返す
+      const res = NextResponse.json(
+        { ok: false, error: "Failed to update x_connections", details: connErr, user_id: userId },
+        { status: 500 }
+      );
+      clearAuthCookies(res);
+      return res;
     }
 
-    return jsonOk({ ok: true, disconnected: true, user_id: userId });
+    // x_tokens：行ごと削除（存在しなくてもOK）
+    const { error: tokErr } = await supabase.from("x_tokens").delete().eq("user_id", userId);
+
+    if (tokErr) {
+      const res = NextResponse.json(
+        { ok: false, error: "Failed to delete x_tokens", details: tokErr, user_id: userId },
+        { status: 500 }
+      );
+      clearAuthCookies(res);
+      return res;
+    }
+
+    // 3) Cookie を全消しして完了
+    const res = NextResponse.json({ ok: true, disconnected: true, user_id: userId });
+    clearAuthCookies(res);
+    return res;
   } catch (e: any) {
-    return jsonOk(
-      { ok: false, disconnected: true, user_id: userId, error: "exception", details: String(e?.message ?? e) },
-      200
+    const res = NextResponse.json(
+      { ok: false, error: "Unexpected error", details: String(e?.message ?? e) },
+      { status: 500 }
     );
+    clearAuthCookies(res);
+    return res;
   }
+}
+
+// （必要なら）プリフライト対策
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204 });
 }
