@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "../../_lib/supabaseAdmin";
+import { decryptText } from "@/lib/crypto";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,6 +21,16 @@ type JobResult = {
   action: "sent" | "failed" | "skipped" | "needs_user_action";
   tweetId?: string | null;
   error?: string;
+};
+
+type XConnection = {
+  user_id: string;
+  x_client_id: string;
+  x_client_secret_enc: string;
+  x_scopes: string;
+  x_access_token: string | null;
+  x_refresh_token: string | null;
+  x_expires_at: string | null;
 };
 
 function clampError(s: string, max = 1500) {
@@ -71,13 +82,26 @@ async function postToX(accessToken: string, text: string) {
   return { ok: res.ok, status: res.status, json };
 }
 
-async function refreshXToken(refreshToken: string) {
-  const clientId = process.env.X_CLIENT_ID;
-  const clientSecret = process.env.X_CLIENT_SECRET; // PKCEだけなら無いこともある
+async function getXConnection(supabase: any, userId: string): Promise<XConnection | null> {
+  const { data, error } = await supabase
+    .from("x_connections")
+    .select(
+      "user_id,x_client_id,x_client_secret_enc,x_scopes,x_access_token,x_refresh_token,x_expires_at"
+    )
+    .eq("user_id", userId)
+    .maybeSingle();
 
-  if (!clientId) {
-    return { ok: false, status: 500, json: { error: "Missing env: X_CLIENT_ID" } };
-  }
+  if (error) throw new Error(`Failed to select x_connections: ${error.message}`);
+  return (data ?? null) as XConnection | null;
+}
+
+async function refreshXTokenForUser(conn: XConnection) {
+  const clientId = conn.x_client_id;
+  const clientSecret = decryptText(conn.x_client_secret_enc); // BYOの秘密鍵（暗号化保存）
+  const refreshToken = conn.x_refresh_token;
+
+  if (!clientId) return { ok: false, status: 500, json: { error: "Missing x_client_id" } };
+  if (!refreshToken) return { ok: false, status: 400, json: { error: "Missing x_refresh_token" } };
 
   const body = new URLSearchParams({
     grant_type: "refresh_token",
@@ -104,6 +128,13 @@ async function refreshXToken(refreshToken: string) {
 
   const json = await res.json().catch(() => ({}));
   return { ok: res.ok, status: res.status, json };
+}
+
+function needsRefreshSoon(expiresAtIso: string | null) {
+  if (!expiresAtIso) return false; // 不明ならrefreshしない（今の動作を維持）
+  const t = new Date(expiresAtIso).getTime();
+  if (Number.isNaN(t)) return false;
+  return t <= Date.now() + 60 * 1000; // 1分以内に切れるなら更新
 }
 
 // ✅ Cron は GET で呼ぶので GET を本命にする
@@ -198,7 +229,7 @@ async function runOnce() {
     }
 
     // -------------------------
-    // ここから X の既存処理（ほぼそのまま）
+    // ここから X（ユーザー別トークン / BYO）
     // -------------------------
 
     // ✅ attempts上限チェック（無限ループ防止）
@@ -234,60 +265,54 @@ async function runOnce() {
       continue;
     }
 
-    // ② トークン取得
-    const { data: tok, error: tokErr } = await supabase
-      .from("x_tokens")
-      .select("access_token, refresh_token")
-      .eq("user_id", job.user_id)
-      .single();
-
-    if (tokErr || !tok?.access_token) {
-      const errMsg = "Missing access_token in x_tokens";
+    // ② ユーザー別のX接続情報を取得
+    let conn: XConnection | null = null;
+    try {
+      conn = await getXConnection(supabase, job.user_id);
+    } catch (e: any) {
+      const errMsg = clampError(`Failed to load x_connection: ${String(e?.message ?? e)}`);
 
       await supabase
         .from("scheduled_posts")
         .update({
-          status: "failed",
+          status: "pending",
+          run_at: bumpRunAtFromNow(),
           attempts: (job.attempts ?? 0) + 1,
           last_error: errMsg,
           updated_at: new Date().toISOString(),
         })
         .eq("id", job.id);
 
-      failed++;
-      results.push({ id: job.id, action: "failed", error: errMsg });
+      results.push({ id: job.id, action: "skipped", error: `retry scheduled: ${errMsg}` });
       continue;
     }
 
-    // ③ 投稿（401ならrefresh→再試行1回）
+    if (!conn?.x_access_token) {
+      const errMsg = "X is not connected for this user (missing x_access_token in x_connections).";
+
+      await supabase
+        .from("scheduled_posts")
+        .update({
+          status: "needs_user_action",
+          attempts: (job.attempts ?? 0) + 1,
+          last_error: errMsg,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", job.id);
+
+      needsUserAction++;
+      results.push({ id: job.id, action: "needs_user_action", error: errMsg });
+      continue;
+    }
+
+    // ③ 投稿（期限切れなら先にrefresh、401ならrefresh→再試行1回）
     let r: { ok: boolean; status: number; json: any };
 
     try {
-      r = await postToX(tok.access_token, job.text);
+      // まず期限切れチェック → refresh（できる場合）
+      if (needsRefreshSoon(conn.x_expires_at) && conn.x_refresh_token) {
+        const rr = await refreshXTokenForUser(conn);
 
-      if (!r.ok && r.status === 401) {
-        // refresh_token が無いなら復旧不能（要再連携）
-        if (!tok.refresh_token) {
-          const errMsg = "X post failed (401): refresh_token missing (need re-auth)";
-
-          await supabase
-            .from("scheduled_posts")
-            .update({
-              status: "auth_required",
-              attempts: (job.attempts ?? 0) + 1,
-              last_error: errMsg,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", job.id);
-
-          results.push({ id: job.id, action: "skipped", error: errMsg });
-          continue;
-        }
-
-        // refresh 実行
-        const rr = await refreshXToken(tok.refresh_token);
-
-        // ✅ refresh が 429/5xx/timeout系なら延期（API障害・レート制限）
         if (!rr.ok && isRetryableHttpStatus(rr.status)) {
           const errMsg = clampError(`X refresh retryable (${rr.status}): ${JSON.stringify(rr.json)}`);
 
@@ -306,26 +331,26 @@ async function runOnce() {
           continue;
         }
 
-        // ✅ refresh の 4xx 等は「再連携が必要」扱い
         if (!rr.ok) {
           const errMsg = clampError(`X refresh failed (${rr.status}): ${JSON.stringify(rr.json)}`);
 
           await supabase
             .from("scheduled_posts")
             .update({
-              status: "auth_required",
+              status: "needs_user_action",
               attempts: (job.attempts ?? 0) + 1,
               last_error: errMsg,
               updated_at: new Date().toISOString(),
             })
             .eq("id", job.id);
 
-          results.push({ id: job.id, action: "skipped", error: errMsg });
+          needsUserAction++;
+          results.push({ id: job.id, action: "needs_user_action", error: errMsg });
           continue;
         }
 
         const newAccess = rr.json?.access_token as string | undefined;
-        const newRefresh = (rr.json?.refresh_token as string | undefined) ?? tok.refresh_token;
+        const newRefresh = (rr.json?.refresh_token as string | undefined) ?? conn.x_refresh_token;
         const expiresIn = rr.json?.expires_in as number | undefined;
 
         if (!newAccess) {
@@ -334,27 +359,126 @@ async function runOnce() {
           await supabase
             .from("scheduled_posts")
             .update({
-              status: "auth_required",
+              status: "needs_user_action",
               attempts: (job.attempts ?? 0) + 1,
               last_error: errMsg,
               updated_at: new Date().toISOString(),
             })
             .eq("id", job.id);
 
-          results.push({ id: job.id, action: "skipped", error: errMsg });
+          needsUserAction++;
+          results.push({ id: job.id, action: "needs_user_action", error: errMsg });
           continue;
         }
 
-        // x_tokens を更新保存（次回以降も生きるように）
         const expiresAt =
           typeof expiresIn === "number" ? new Date(Date.now() + expiresIn * 1000).toISOString() : null;
 
         await supabase
-          .from("x_tokens")
+          .from("x_connections")
           .update({
-            access_token: newAccess,
-            refresh_token: newRefresh,
-            ...(expiresAt ? { expires_at: expiresAt } : {}),
+            x_access_token: newAccess,
+            x_refresh_token: newRefresh,
+            ...(expiresAt ? { x_expires_at: expiresAt } : {}),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("user_id", job.user_id);
+
+        conn = { ...conn, x_access_token: newAccess, x_refresh_token: newRefresh, x_expires_at: expiresAt };
+      }
+
+      // 投稿
+      r = await postToX(conn.x_access_token, job.text);
+
+      // 401ならrefresh→再投稿（1回だけ）
+      if (!r.ok && r.status === 401) {
+        if (!conn.x_refresh_token) {
+          const errMsg = "X post failed (401): refresh_token missing (need re-auth)";
+
+          await supabase
+            .from("scheduled_posts")
+            .update({
+              status: "needs_user_action",
+              attempts: (job.attempts ?? 0) + 1,
+              last_error: errMsg,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", job.id);
+
+          needsUserAction++;
+          results.push({ id: job.id, action: "needs_user_action", error: errMsg });
+          continue;
+        }
+
+        const rr = await refreshXTokenForUser(conn);
+
+        if (!rr.ok && isRetryableHttpStatus(rr.status)) {
+          const errMsg = clampError(`X refresh retryable (${rr.status}): ${JSON.stringify(rr.json)}`);
+
+          await supabase
+            .from("scheduled_posts")
+            .update({
+              status: "pending",
+              run_at: bumpRunAtFromNow(),
+              attempts: (job.attempts ?? 0) + 1,
+              last_error: errMsg,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", job.id);
+
+          results.push({ id: job.id, action: "skipped", error: `retry scheduled: ${errMsg}` });
+          continue;
+        }
+
+        if (!rr.ok) {
+          const errMsg = clampError(`X refresh failed (${rr.status}): ${JSON.stringify(rr.json)}`);
+
+          await supabase
+            .from("scheduled_posts")
+            .update({
+              status: "needs_user_action",
+              attempts: (job.attempts ?? 0) + 1,
+              last_error: errMsg,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", job.id);
+
+          needsUserAction++;
+          results.push({ id: job.id, action: "needs_user_action", error: errMsg });
+          continue;
+        }
+
+        const newAccess = rr.json?.access_token as string | undefined;
+        const newRefresh = (rr.json?.refresh_token as string | undefined) ?? conn.x_refresh_token;
+        const expiresIn = rr.json?.expires_in as number | undefined;
+
+        if (!newAccess) {
+          const errMsg = clampError(`X refresh ok but access_token missing: ${JSON.stringify(rr.json)}`);
+
+          await supabase
+            .from("scheduled_posts")
+            .update({
+              status: "needs_user_action",
+              attempts: (job.attempts ?? 0) + 1,
+              last_error: errMsg,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", job.id);
+
+          needsUserAction++;
+          results.push({ id: job.id, action: "needs_user_action", error: errMsg });
+          continue;
+        }
+
+        const expiresAt =
+          typeof expiresIn === "number" ? new Date(Date.now() + expiresIn * 1000).toISOString() : null;
+
+        await supabase
+          .from("x_connections")
+          .update({
+            x_access_token: newAccess,
+            x_refresh_token: newRefresh,
+            ...(expiresAt ? { x_expires_at: expiresAt } : {}),
             updated_at: new Date().toISOString(),
           })
           .eq("user_id", job.user_id);
@@ -385,19 +509,20 @@ async function runOnce() {
     if (!r.ok) {
       const errMsg = clampError(`X post failed (${r.status}): ${JSON.stringify(r.json)}`);
 
-      // ✅ 401 は再連携が必要扱い
-      if (r.status === 401) {
+      // ✅ 401/403 は再連携が必要扱い
+      if (r.status === 401 || r.status === 403) {
         await supabase
           .from("scheduled_posts")
           .update({
-            status: "auth_required",
+            status: "needs_user_action",
             attempts: (job.attempts ?? 0) + 1,
             last_error: errMsg,
             updated_at: new Date().toISOString(),
           })
           .eq("id", job.id);
 
-        results.push({ id: job.id, action: "skipped", error: errMsg });
+        needsUserAction++;
+        results.push({ id: job.id, action: "needs_user_action", error: errMsg });
         continue;
       }
 
@@ -442,6 +567,7 @@ async function runOnce() {
       .update({
         status: "sent",
         tweet_id: tweetId,
+        last_error: "",
         updated_at: new Date().toISOString(),
       })
       .eq("id", job.id);
