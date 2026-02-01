@@ -1,88 +1,93 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { getCookie } from "../../../_lib/cookies";
 
 export const runtime = "nodejs";
 
 function getSupabaseAdmin() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceKey =
+  const url =
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    process.env.SUPABASE_URL ||
+    process.env.PUBLIC_SUPABASE_URL;
+
+  const key =
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_SERVICE_ROLE;
+    process.env.SUPABASE_SERVICE_KEY ||
+    process.env.SUPABASE_SECRET_KEY;
 
-  if (!url) throw new Error("Missing env: NEXT_PUBLIC_SUPABASE_URL");
-  if (!serviceKey)
-    throw new Error("Missing env: SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SERVICE_ROLE)");
+  if (!url || !key) {
+    throw new Error(
+      "Missing Supabase env: NEXT_PUBLIC_SUPABASE_URL (or SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY"
+    );
+  }
 
-  return createClient(url, serviceKey, {
-    auth: { persistSession: false },
+  return createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
   });
 }
 
-/**
- * GET /api/x/status
- * - Cookie: x_user_id を優先
- * - x_tokens を見て connected 判定（x_connections は補助情報）
- */
-export async function GET(req: NextRequest) {
+export async function GET() {
   try {
-    const userId =
-      req.cookies.get("x_user_id")?.value ||
-      req.nextUrl.searchParams.get("user_id") ||
-      "";
+    const user_id = (await getCookie("x_user_id")) || "";
 
-    if (!userId) {
-      return NextResponse.json(
-        { ok: true, connected: false, reason: "no_user_id" },
-        { status: 200 }
-      );
+    if (!user_id) {
+      return NextResponse.json({
+        ok: true,
+        user_id: null,
+        connected: false,
+        reason: "no_x_user_id_cookie",
+      });
     }
 
     const supabase = getSupabaseAdmin();
 
-    // 1) x_tokens（実トークンが入っているテーブル）
-    const { data: tok, error: tokErr } = await supabase
+    // 1) 正：x_tokens を見て連携判定する
+    const { data: tokenRow, error: tokenErr } = await supabase
       .from("x_tokens")
       .select("access_token, refresh_token, expires_at, updated_at")
-      .eq("user_id", userId)
+      .eq("user_id", user_id)
       .maybeSingle();
 
-    if (tokErr) throw tokErr;
+    if (tokenErr) {
+      return NextResponse.json(
+        { ok: false, where: "x_tokens", message: tokenErr.message, user_id },
+        { status: 500 }
+      );
+    }
 
-    const hasAccessToken = !!tok?.access_token;
-    const hasRefreshToken = !!tok?.refresh_token;
+    const has_access_token = Boolean(tokenRow?.access_token);
+    const has_refresh_token = Boolean(tokenRow?.refresh_token);
+    const token_expires_at = tokenRow?.expires_at ?? null;
+    const token_updated_at = tokenRow?.updated_at ?? null;
 
-    // 2) x_connections（スコープ等の補助）
-    const { data: conn, error: connErr } = await supabase
+    const connected = has_access_token || has_refresh_token;
+
+    // 2) 参考：x_connections（scopes/更新日時など）
+    const { data: connRow } = await supabase
       .from("x_connections")
-      .select("x_scopes, x_expires_at, updated_at")
-      .eq("user_id", userId)
+      .select("x_scopes, x_expires_at, updated_at, x_access_token, x_refresh_token")
+      .eq("user_id", user_id)
       .maybeSingle();
 
-    if (connErr) throw connErr;
+    return NextResponse.json({
+      ok: true,
+      user_id,
+      connected,
+      has_access_token,
+      has_refresh_token,
+      token_expires_at,
+      token_updated_at,
+      x_scopes: connRow?.x_scopes ?? null,
+      x_connections_expires_at: connRow?.x_expires_at ?? null,
+      x_connections_updated_at: connRow?.updated_at ?? null,
 
-    const connected = hasAccessToken && hasRefreshToken;
-
-    return NextResponse.json(
-      {
-        ok: true,
-        user_id: userId,
-        connected,
-        // 連携判定は x_tokens 由来（ここが重要）
-        has_access_token: hasAccessToken,
-        has_refresh_token: hasRefreshToken,
-
-        // 参考情報（UI表示用に使える）
-        token_expires_at: tok?.expires_at ?? null,
-        token_updated_at: tok?.updated_at ?? null,
-        x_scopes: conn?.x_scopes ?? null,
-        x_connections_expires_at: conn?.x_expires_at ?? null,
-        x_connections_updated_at: conn?.updated_at ?? null,
-      },
-      { status: 200 }
-    );
+      // デバッグ用：connections側に入ってる/入ってない確認
+      conn_has_access_token: Boolean(connRow?.x_access_token),
+      conn_has_refresh_token: Boolean(connRow?.x_refresh_token),
+    });
   } catch (e: any) {
     return NextResponse.json(
-      { ok: false, error: e?.message ?? String(e) },
+      { ok: false, message: e?.message ?? "unknown error" },
       { status: 500 }
     );
   }
