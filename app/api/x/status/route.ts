@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import { createClient } from "@supabase/supabase-js";
-import { getCookie } from "../../../_lib/cookies";
 
 export const runtime = "nodejs";
 
@@ -28,7 +28,9 @@ function getSupabaseAdmin() {
 
 export async function GET() {
   try {
-    const user_id = (await getCookie("x_user_id")) || "";
+    // Next.js 15+ は cookies() が async
+    const cookieStore = await cookies();
+    const user_id = cookieStore.get("x_user_id")?.value ?? "";
 
     if (!user_id) {
       return NextResponse.json({
@@ -41,7 +43,7 @@ export async function GET() {
 
     const supabase = getSupabaseAdmin();
 
-    // 1) 正：x_tokens を見て連携判定する
+    // 1) 正：x_tokens を見て連携判定
     const { data: tokenRow, error: tokenErr } = await supabase
       .from("x_tokens")
       .select("access_token, refresh_token, expires_at, updated_at")
@@ -57,12 +59,8 @@ export async function GET() {
 
     const has_access_token = Boolean(tokenRow?.access_token);
     const has_refresh_token = Boolean(tokenRow?.refresh_token);
-    const token_expires_at = tokenRow?.expires_at ?? null;
-    const token_updated_at = tokenRow?.updated_at ?? null;
 
-    const connected = has_access_token || has_refresh_token;
-
-    // 2) 参考：x_connections（scopes/更新日時など）
+    // 2) 参考：x_connections も返す（デバッグ用）
     const { data: connRow } = await supabase
       .from("x_connections")
       .select("x_scopes, x_expires_at, updated_at, x_access_token, x_refresh_token")
@@ -72,16 +70,14 @@ export async function GET() {
     return NextResponse.json({
       ok: true,
       user_id,
-      connected,
+      connected: has_access_token || has_refresh_token,
       has_access_token,
       has_refresh_token,
-      token_expires_at,
-      token_updated_at,
+      token_expires_at: tokenRow?.expires_at ?? null,
+      token_updated_at: tokenRow?.updated_at ?? null,
       x_scopes: connRow?.x_scopes ?? null,
       x_connections_expires_at: connRow?.x_expires_at ?? null,
       x_connections_updated_at: connRow?.updated_at ?? null,
-
-      // デバッグ用：connections側に入ってる/入ってない確認
       conn_has_access_token: Boolean(connRow?.x_access_token),
       conn_has_refresh_token: Boolean(connRow?.x_refresh_token),
     });
