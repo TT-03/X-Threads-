@@ -7,9 +7,22 @@ export default function AccountsClient() {
   const [busy, setBusy] = useState(false);
 
   async function refresh() {
-    const res = await fetch("/api/x/status", { cache: "no-store" });
-    const data = await res.json().catch(() => ({}));
-    setConnected(Boolean(data?.connected));
+    try {
+      const res = await fetch("/api/x/status", {
+        cache: "no-store",
+        credentials: "include",
+      });
+
+      if (!res.ok) {
+        setConnected(false);
+        return;
+      }
+
+      const data = await res.json().catch(() => ({}));
+      setConnected(Boolean(data?.connected));
+    } catch {
+      setConnected(false);
+    }
   }
 
   useEffect(() => {
@@ -19,7 +32,10 @@ export default function AccountsClient() {
   async function disconnect() {
     setBusy(true);
     try {
-      await fetch("/api/x/disconnect", { method: "POST" });
+      await fetch("/api/x/disconnect", {
+        method: "POST",
+        credentials: "include",
+      });
       await refresh();
     } finally {
       setBusy(false);
