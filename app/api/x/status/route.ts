@@ -1,73 +1,89 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { getCookie } from "../../_lib/cookies";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
 
 function getSupabaseAdmin() {
-  const url =
-    process.env.SUPABASE_URL ||
-    process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    "";
-
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey =
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_SERVICE_KEY ||
-    "";
+    process.env.SUPABASE_SERVICE_ROLE;
 
-  if (!url || !serviceKey) return null;
+  if (!url) throw new Error("Missing env: NEXT_PUBLIC_SUPABASE_URL");
+  if (!serviceKey)
+    throw new Error("Missing env: SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SERVICE_ROLE)");
 
   return createClient(url, serviceKey, {
     auth: { persistSession: false },
   });
 }
 
-export async function GET() {
-  // Cookie ��
-  const userId = (await getCookie("x_user_id")) || "";
-  const accessToken = (await getCookie("x_access_token")) || "";
-  const hasCookieToken = Boolean(accessToken);
+/**
+ * GET /api/x/status
+ * - Cookie: x_user_id を優先
+ * - x_tokens を見て connected 判定（x_connections は補助情報）
+ */
+export async function GET(req: NextRequest) {
+  try {
+    const userId =
+      req.cookies.get("x_user_id")?.value ||
+      req.nextUrl.searchParams.get("user_id") ||
+      "";
 
-  // DB ���ix_tokens ������j
-  let hasDbToken = false;
-  let dbExpiresAt: string | null = null;
+    if (!userId) {
+      return NextResponse.json(
+        { ok: true, connected: false, reason: "no_user_id" },
+        { status: 200 }
+      );
+    }
 
-  const admin = getSupabaseAdmin();
-  if (admin && userId) {
-    const { data, error } = await admin
+    const supabase = getSupabaseAdmin();
+
+    // 1) x_tokens（実トークンが入っているテーブル）
+    const { data: tok, error: tokErr } = await supabase
       .from("x_tokens")
-      .select("expires_at, updated_at")
+      .select("access_token, refresh_token, expires_at, updated_at")
       .eq("user_id", userId)
       .maybeSingle();
 
-    if (!error && data) {
-      hasDbToken = true;
-      dbExpiresAt = data.expires_at ?? null;
-    }
-  }
+    if (tokErr) throw tokErr;
 
-  const connected = hasCookieToken || hasDbToken;
+    const hasAccessToken = !!tok?.access_token;
+    const hasRefreshToken = !!tok?.refresh_token;
 
-  return NextResponse.json(
-    {
-      connected,
-      user_id: userId || null,
-      has_cookie_token: hasCookieToken,
-      has_db_token: hasDbToken,
-      db_expires_at: dbExpiresAt,
-      note:
-        !admin
-          ? "Supabase admin env (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY) is not set; DB check skipped."
-          : null,
-    },
-    {
-      headers: {
-        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
-        Pragma: "no-cache",
-        Expires: "0",
+    // 2) x_connections（スコープ等の補助）
+    const { data: conn, error: connErr } = await supabase
+      .from("x_connections")
+      .select("x_scopes, x_expires_at, updated_at")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (connErr) throw connErr;
+
+    const connected = hasAccessToken && hasRefreshToken;
+
+    return NextResponse.json(
+      {
+        ok: true,
+        user_id: userId,
+        connected,
+        // 連携判定は x_tokens 由来（ここが重要）
+        has_access_token: hasAccessToken,
+        has_refresh_token: hasRefreshToken,
+
+        // 参考情報（UI表示用に使える）
+        token_expires_at: tok?.expires_at ?? null,
+        token_updated_at: tok?.updated_at ?? null,
+        x_scopes: conn?.x_scopes ?? null,
+        x_connections_expires_at: conn?.x_expires_at ?? null,
+        x_connections_updated_at: conn?.updated_at ?? null,
       },
-    }
-  );
+      { status: 200 }
+    );
+  } catch (e: any) {
+    return NextResponse.json(
+      { ok: false, error: e?.message ?? String(e) },
+      { status: 500 }
+    );
+  }
 }
